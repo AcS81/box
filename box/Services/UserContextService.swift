@@ -5,6 +5,7 @@
 //  Created on 29.09.2025.
 //
 
+import Combine
 import Foundation
 import SwiftData
 
@@ -41,12 +42,18 @@ class UserContextService: ObservableObject {
             .mapValues { $0.count }
         patterns["priorityPatterns"] = priorityDistribution
 
-        let averageProgressSpeed = goals.compactMap { goal -> Double? in
+        let progressSpeeds = goals.compactMap { goal -> Double? in
             let timeElapsed = goal.updatedAt.timeIntervalSince(goal.createdAt)
             guard timeElapsed > 0 else { return nil }
             return goal.progress / timeElapsed
-        }.reduce(0, +) / Double(goals.count)
-        patterns["averageProgressSpeed"] = averageProgressSpeed
+        }
+
+        if !progressSpeeds.isEmpty {
+            let averageProgressSpeed = progressSpeeds.reduce(0, +) / Double(progressSpeeds.count)
+            patterns["averageProgressSpeed"] = averageProgressSpeed
+        } else {
+            patterns["averageProgressSpeed"] = 0.0
+        }
 
         let completionTimes = goals
             .filter { $0.progress >= 1.0 }

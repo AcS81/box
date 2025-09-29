@@ -7,6 +7,7 @@
 
 import Speech
 import AVFoundation
+import AVFAudio
 import SwiftUI
 import Combine
 
@@ -31,9 +32,21 @@ class VoiceService: ObservableObject {
                 self.isAuthorized = authStatus == .authorized
             }
         }
-        
-        AVAudioSession.sharedInstance().requestRecordPermission { granted in
-            DispatchQueue.main.async {
+
+        Task {
+            let granted: Bool
+
+            if #available(iOS 17, *) {
+                granted = await AVAudioApplication.requestRecordPermission()
+            } else {
+                granted = await withCheckedContinuation { continuation in
+                    AVAudioSession.sharedInstance().requestRecordPermission { allowed in
+                        continuation.resume(returning: allowed)
+                    }
+                }
+            }
+
+            await MainActor.run {
                 self.isAuthorized = self.isAuthorized && granted
             }
         }

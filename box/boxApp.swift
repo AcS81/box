@@ -14,7 +14,10 @@ struct boxApp: App {
         let schema = Schema([
             Goal.self,
             ChatMessage.self,
-            AIMirrorCard.self
+            AIMirrorCard.self,
+            GoalSnapshot.self,
+            GoalRevision.self,
+            ScheduledEventLink.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         

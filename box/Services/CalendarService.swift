@@ -11,6 +11,11 @@ import Combine
 
 @MainActor
 class CalendarService: ObservableObject {
+    struct ActivationPlan {
+        let events: [ProposedEvent]
+        let tips: [String]
+    }
+
     private let eventStore = EKEventStore()
     @Published var isAuthorized = false
     
@@ -27,7 +32,8 @@ class CalendarService: ObservableObject {
         }
     }
     
-    func createEvent(title: String, startDate: Date, duration: TimeInterval, notes: String? = nil) async throws {
+    @discardableResult
+    func createEvent(title: String, startDate: Date, duration: TimeInterval, notes: String? = nil) async throws -> String {
         guard isAuthorized else {
             throw CalendarError.notAuthorized
         }
@@ -40,9 +46,13 @@ class CalendarService: ObservableObject {
         event.calendar = eventStore.defaultCalendarForNewEvents
         
         try eventStore.save(event, span: .thisEvent)
+        guard let identifier = event.eventIdentifier else {
+            throw CalendarError.unknown
+        }
+        return identifier
     }
     
-    func generateSmartSchedule(for goal: Goal, goals: [Goal] = []) async throws -> [ProposedEvent] {
+    func generateSmartSchedule(for goal: Goal, goals: [Goal] = []) async throws -> ActivationPlan {
         // AI-powered scheduling based on goal priority and user patterns
         let context = UserContextService.shared.buildContext(from: goals)
 
@@ -50,30 +60,42 @@ class CalendarService: ObservableObject {
             let aiResponse = try await AIService.shared.generateCalendarEvents(for: goal, context: context)
 
             // Parse AI response and create proposed events
-            var proposedEvents: [ProposedEvent] = []
-
-            for event in aiResponse.events {
+            let proposedEvents: [ProposedEvent] = aiResponse.events.map { event in
                 let startDate = suggestOptimalTime(for: goal, timeSlot: event.suggestedTimeSlot)
-                proposedEvents.append(ProposedEvent(
+                return ProposedEvent(
                     title: event.title,
                     startDate: startDate,
-                    duration: TimeInterval(event.duration * 60), // Convert minutes to seconds
-                    goalId: goal.id
-                ))
+                    duration: TimeInterval(event.duration * 60),
+                    goalId: goal.id,
+                    notes: event.description,
+                    suggestedTimeSlot: event.suggestedTimeSlot,
+                    preparation: event.preparation
+                )
             }
 
-            return proposedEvents
+            return ActivationPlan(
+                events: proposedEvents,
+                tips: aiResponse.schedulingTips ?? []
+            )
         } catch {
             print("❌ AI scheduling failed, using fallback: \(error)")
 
             // Fallback: create a simple proposed event
             let startDate = suggestOptimalTime(for: goal)
-            return [ProposedEvent(
+            let fallbackEvent = ProposedEvent(
                 title: "Work on: \(goal.title)",
                 startDate: startDate,
-                duration: 3600, // 1 hour
-                goalId: goal.id
-            )]
+                duration: 3600,
+                goalId: goal.id,
+                notes: "Auto-generated focus block",
+                suggestedTimeSlot: nil,
+                preparation: nil
+            )
+
+            return ActivationPlan(
+                events: [fallbackEvent],
+                tips: ["We scheduled a starter focus session. Adjust timing as needed."]
+            )
         }
     }
     
@@ -114,21 +136,56 @@ class CalendarService: ObservableObject {
         return calendar.date(from: components) ?? Date()
     }
     
+    func deleteEvent(with identifier: String) async throws {
+        guard isAuthorized else {
+            throw CalendarError.notAuthorized
+        }
+
+        if let event = eventStore.event(withIdentifier: identifier) {
+            try eventStore.remove(event, span: .thisEvent)
+        }
+    }
+
     enum CalendarError: LocalizedError {
         case notAuthorized
+        case unknown
         
         var errorDescription: String? {
             switch self {
             case .notAuthorized:
                 return "Calendar access not authorized"
+            case .unknown:
+                return "Unexpected calendar error"
             }
         }
     }
 }
 
-struct ProposedEvent {
+struct ProposedEvent: Identifiable {
+    let id = UUID()
     let title: String
     let startDate: Date
     let duration: TimeInterval
     let goalId: UUID
+    let notes: String?
+    let suggestedTimeSlot: String?
+    let preparation: [String]?
+
+    init(
+        title: String,
+        startDate: Date,
+        duration: TimeInterval,
+        goalId: UUID,
+        notes: String? = nil,
+        suggestedTimeSlot: String? = nil,
+        preparation: [String]? = nil
+    ) {
+        self.title = title
+        self.startDate = startDate
+        self.duration = duration
+        self.goalId = goalId
+        self.notes = notes
+        self.suggestedTimeSlot = suggestedTimeSlot
+        self.preparation = preparation
+    }
 }

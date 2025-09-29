@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import SwiftData
 
 struct EmptyStateView: View {
     @StateObject private var voiceService = VoiceService()

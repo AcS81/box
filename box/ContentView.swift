@@ -21,10 +21,52 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showOnboarding = false
     @State private var keyboardHeight: CGFloat = 0
-    @State private var showGeneralChat = false
+    @State private var selectedGoal: Goal? = nil
+    @State private var chatMode: ChatMode = .createGoal
+
+    enum ChatMode {
+        case createGoal
+        case chatWithGoal(Goal)
+        case generalManagement
+
+        var placeholder: String {
+            switch self {
+            case .createGoal:
+                return "Write a goal or tap the mic..."
+            case .chatWithGoal(let goal):
+                return "Chat with \(goal.title)..."
+            case .generalManagement:
+                return "Ask about your goals..."
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .createGoal:
+                return "sparkles"
+            case .chatWithGoal:
+                return "bubble.left"
+            case .generalManagement:
+                return "wand.and.stars"
+            }
+        }
+
+        func isEqual(to other: ChatMode) -> Bool {
+            switch (self, other) {
+            case (.createGoal, .createGoal), (.generalManagement, .generalManagement):
+                return true
+            case (.chatWithGoal(let goal1), .chatWithGoal(let goal2)):
+                return goal1.id == goal2.id
+            default:
+                return false
+            }
+        }
+    }
     
     @StateObject private var voiceService = VoiceService()
     @StateObject private var userContextService = UserContextService.shared
+    @StateObject private var calendarService: CalendarService
+    @StateObject private var lifecycleService: GoalLifecycleService
 
     private var aiService: AIService {
         AIService.shared
@@ -32,6 +74,18 @@ struct ContentView: View {
     
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("userPreferredName") private var userPreferredName = ""
+
+    init() {
+        let calendarService = CalendarService()
+        _calendarService = StateObject(wrappedValue: calendarService)
+        _lifecycleService = StateObject(
+            wrappedValue: GoalLifecycleService(
+                aiService: AIService.shared,
+                calendarService: calendarService,
+                userContextService: UserContextService.shared
+            )
+        )
+    }
     
     enum ViewMode: String, CaseIterable {
         case timeBased = "Time"
@@ -66,6 +120,18 @@ struct ContentView: View {
     
     var categories: [String] {
         Array(Set(goals.map { $0.category })).sorted()
+    }
+
+    var shouldShowCategoryFilter: Bool {
+        // Only show category filter if we have multiple categories and enough goals
+        let categoryCount = categories.count
+        let totalGoals = goals.count
+
+        // Show folders only if:
+        // - More than 1 category exists
+        // - At least 4 goals total (minimum to make folders useful)
+        // - Not more categories than goals/2 (avoid too many empty folders)
+        return categoryCount > 1 && totalGoals >= 4 && categoryCount <= max(2, totalGoals / 2)
     }
     
     var greeting: String {
@@ -123,41 +189,85 @@ struct ContentView: View {
                     .padding(.horizontal)
                     .padding(.top, 8)
                     
-                    // Input field with voice
-                    HStack(spacing: 12) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "sparkles")
-                                .foregroundStyle(.blue)
-                                .font(.system(size: 18))
-                            
-                            TextField(voiceService.isRecording ? "Listening..." : "Write a goal or tap the mic...", text: $inputText)
-                                .font(.body)
-                                .disabled(voiceService.isRecording)
-                                .onSubmit {
-                                    createGoal()
+                    // Contextual input field with voice
+                    VStack(spacing: 8) {
+                        // Chat mode selector
+                        if !goals.isEmpty {
+                            HStack(spacing: 8) {
+                                Button(action: { chatMode = .createGoal }) {
+                                    Text("Create")
+                                        .font(.caption)
+                                        .fontWeight(chatMode == .createGoal ? .semibold : .medium)
+                                        .foregroundStyle(chatMode == .createGoal ? .white : .primary)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 4)
+                                        .background(chatMode == .createGoal ? Color.blue : Color.clear)
+                                        .clipShape(Capsule())
                                 }
-                            
-                            if isProcessing {
-                                ProgressView()
-                                    .scaleEffect(0.8)
+
+                                Button(action: { chatMode = .generalManagement }) {
+                                    Text("Manage")
+                                        .font(.caption)
+                                        .fontWeight(chatMode == .generalManagement ? .semibold : .medium)
+                                        .foregroundStyle(chatMode == .generalManagement ? .white : .primary)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 4)
+                                        .background(chatMode == .generalManagement ? Color.green : Color.clear)
+                                        .clipShape(Capsule())
+                                }
+
+                                if let selectedGoal = selectedGoal {
+                                    Button(action: { chatMode = .chatWithGoal(selectedGoal) }) {
+                                        Text("Chat with \(selectedGoal.title.prefix(10))...")
+                                            .font(.caption)
+                                            .fontWeight(chatMode.isEqual(to: .chatWithGoal(selectedGoal)) ? .semibold : .medium)
+                                            .foregroundStyle(chatMode.isEqual(to: .chatWithGoal(selectedGoal)) ? .white : .primary)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 4)
+                                            .background(chatMode.isEqual(to: .chatWithGoal(selectedGoal)) ? Color.purple : Color.clear)
+                                            .clipShape(Capsule())
+                                    }
+                                }
+
+                                Spacer()
                             }
+                            .padding(.horizontal, 4)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(.regularMaterial)
-                        .clipShape(Capsule())
-                        
-                        // Voice button
-                        Button(action: {
-                            Task {
-                                if voiceService.isRecording {
-                                    voiceService.stopRecording()
-                                    inputText = voiceService.transcribedText
-                                    createGoal()
-                                } else {
-                                    try await voiceService.startRecording()
+
+                        HStack(spacing: 12) {
+                            HStack(spacing: 8) {
+                                Image(systemName: chatMode.icon)
+                                    .foregroundStyle(.blue)
+                                    .font(.system(size: 18))
+
+                                TextField(voiceService.isRecording ? "Listening..." : chatMode.placeholder, text: $inputText)
+                                    .font(.body)
+                                    .disabled(voiceService.isRecording)
+                                    .onSubmit {
+                                        handleInput()
+                                    }
+
+                                if isProcessing {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
                                 }
                             }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .background(.regularMaterial)
+                            .clipShape(Capsule())
+                        
+                            // Voice button
+                            Button(action: {
+                                Task {
+                                    if voiceService.isRecording {
+                                        voiceService.stopRecording()
+                                        inputText = voiceService.transcribedText
+                                        handleInput()
+                                    } else {
+                                        try await voiceService.startRecording()
+                                    }
+                                }
                         }) {
                             ZStack {
                                 Circle()
@@ -171,6 +281,9 @@ struct ContentView: View {
                         }
                         .scaleEffect(voiceService.isRecording ? 1.1 : 1.0)
                         .animation(.easeInOut(duration: 0.2), value: voiceService.isRecording)
+                        .accessibilityLabel(voiceService.isRecording ? "Stop recording" : "Start voice recording")
+                        .accessibilityHint("Double tap to \(voiceService.isRecording ? "stop recording and create goal" : "start recording your goal with voice")")
+                        .accessibilityAddTraits(.isButton)
                     }
                     .padding(.horizontal)
                     
@@ -206,17 +319,8 @@ struct ContentView: View {
                                 )
                             }
                         }
-                        
+
                         Spacer()
-                        
-                        // General Chat Button
-                        Button(action: { showGeneralChat = true }) {
-                            Image(systemName: "bubble.left.fill")
-                                .font(.system(size: 16))
-                                .foregroundStyle(.blue)
-                                .frame(width: 36, height: 36)
-                                .background(Circle().fill(.ultraThinMaterial))
-                        }
                     }
                     .padding(.horizontal)
                 }
@@ -234,7 +338,7 @@ struct ContentView: View {
                     } else {
                         ScrollView {
                             VStack(spacing: 20) {
-                                if viewMode == .categoryBased && categories.count > 1 {
+                                if viewMode == .categoryBased && shouldShowCategoryFilter {
                                     CategoryFilterView(
                                         categories: categories,
                                         selectedCategory: $selectedCategory
@@ -310,11 +414,9 @@ struct ContentView: View {
                 .background(.ultraThinMaterial)
             }
         }
+        .environmentObject(lifecycleService)
         .sheet(isPresented: $showSettings) {
             SettingsView()
-        }
-        .sheet(isPresented: $showGeneralChat) {
-            GeneralChatView(goals: goals)
         }
         .sheet(isPresented: $showOnboarding) {
             OnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)
@@ -327,6 +429,130 @@ struct ContentView: View {
         }
     }
     
+    private func handleInput() {
+        guard !inputText.trimmed.isEmpty else { return }
+
+        switch chatMode {
+        case .createGoal:
+            createGoal()
+        case .chatWithGoal(let goal):
+            chatWithGoal(goal)
+        case .generalManagement:
+            handleGeneralManagement()
+        }
+    }
+
+    private func chatWithGoal(_ goal: Goal) {
+        let message = inputText.trimmed
+        inputText = ""
+
+        withAnimation(.cardSpring) {
+            isProcessing = true
+        }
+
+        Task {
+            do {
+                let context = userContextService.buildContext(from: goals)
+                let response = try await aiService.processUnifiedMessage(message, goal: goal, context: context)
+
+                await MainActor.run {
+                    // Handle any lifecycle intents
+                    if let intent = response.intent {
+                        handleLifecycleIntent(intent, response: response)
+                    }
+
+                    // Show AI response (this could be integrated into chat history)
+                    print("🤖 AI Response: \(response.message)")
+
+                    if response.requiresConfirmation {
+                        print("⚠️ Action requires confirmation")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    print("❌ Chat error: \(error)")
+                }
+            }
+
+            await MainActor.run {
+                withAnimation(.cardSpring) {
+                    isProcessing = false
+                }
+            }
+        }
+    }
+
+    private func handleGeneralManagement() {
+        let message = inputText.trimmed
+        inputText = ""
+
+        withAnimation(.cardSpring) {
+            isProcessing = true
+        }
+
+        Task {
+            do {
+                let context = userContextService.buildContext(from: goals)
+                let response = try await aiService.processUnifiedMessage(message, context: context)
+
+                await MainActor.run {
+                    // Handle any lifecycle intents
+                    if let intent = response.intent {
+                        handleLifecycleIntent(intent, response: response)
+                    }
+
+                    // Show AI response
+                    print("🛠️ Management Response: \(response.message)")
+                }
+            } catch {
+                await MainActor.run {
+                    print("❌ Management error: \(error)")
+                }
+            }
+
+            await MainActor.run {
+                withAnimation(.cardSpring) {
+                    isProcessing = false
+                }
+            }
+        }
+    }
+
+    private func handleLifecycleIntent(_ intent: LifecycleIntent, response: UnifiedChatResponse) {
+        Task {
+            do {
+                switch intent {
+                case .delete(let goal):
+                    if response.requiresConfirmation {
+                        // For now, just execute - in a full implementation, you'd show a confirmation dialog
+                        print("🗑️ Deleting goal: \(goal.title)")
+                    }
+                    try await lifecycleService.delete(goal: goal, within: goals, modelContext: modelContext)
+
+                case .complete(let goal):
+                    print("✅ Completing goal: \(goal.title)")
+                    await lifecycleService.complete(goal: goal, within: goals, modelContext: modelContext)
+
+                case .edit(let goal, let changes):
+                    print("✏️ Editing goal: \(goal.title)")
+                    lifecycleService.updateGoal(
+                        goal,
+                        title: changes.title,
+                        content: changes.content,
+                        category: changes.category,
+                        priority: changes.priority
+                    )
+                }
+
+                // Haptic feedback
+                let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+                impactFeedback.impactOccurred()
+            } catch {
+                print("❌ Failed to execute lifecycle action: \(error)")
+            }
+        }
+    }
+
     private func createGoal() {
         guard !inputText.trimmed.isEmpty else { return }
 
@@ -443,11 +669,11 @@ struct ContentView: View {
     
     private func requestPermissions() async {
         voiceService.requestAuthorization()
-        _ = await CalendarService().requestAccess()
+        _ = await calendarService.requestAccess()
     }
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: [Goal.self, ChatMessage.self, AIMirrorCard.self])
+        .modelContainer(for: [Goal.self, ChatMessage.self, AIMirrorCard.self, GoalSnapshot.self, GoalRevision.self, ScheduledEventLink.self])
 }

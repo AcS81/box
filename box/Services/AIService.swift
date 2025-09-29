@@ -40,13 +40,14 @@ struct AIContext {
 
 @MainActor
 class AIService: ObservableObject {
-    static let shared = AIService()
+    static let shared = AIService(secretsService: SecretsService.shared)
 
-    private let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? ""
     private let baseURL = "https://api.openai.com/v1/chat/completions"
     private let requestTimeout: TimeInterval = 30.0
     private var requestCache: [String: CachedResponse] = [:]
     private let cacheTimeout: TimeInterval = 300
+    private let secretsService: SecretsService
+    private var cancellables: Set<AnyCancellable> = []
 
     private struct CachedResponse {
         let response: String
@@ -63,7 +64,23 @@ class AIService: ObservableObject {
         case generateMirrorCard(goal: Goal, context: AIContext)
     }
 
-    private init() {}
+    private init(secretsService: SecretsService) {
+        self.secretsService = secretsService
+
+        secretsService.$openAIKey
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.clearCache()
+            }
+            .store(in: &cancellables)
+    }
+
+    private var currentAPIKey: String {
+        if let key = secretsService.openAIKey, !key.isEmpty {
+            return key
+        }
+        return ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? ""
+    }
 
     func processRequest<T: Codable>(_ function: AIFunction, responseType: T.Type) async throws -> T {
         let cacheKey = generateCacheKey(for: function)
@@ -92,16 +109,18 @@ class AIService: ObservableObject {
     }
 
     private func makeAPIRequest(for function: AIFunction) async throws -> String {
+        let apiKey = currentAPIKey
+
         guard !apiKey.isEmpty else {
             throw AIError.noAPIKey
         }
 
         return try await retryWithExponentialBackoff(maxRetries: 3) {
-            try await performSingleAPIRequest(for: function)
+            try await performSingleAPIRequest(for: function, apiKey: apiKey)
         }
     }
 
-    private func performSingleAPIRequest(for function: AIFunction) async throws -> String {
+    private func performSingleAPIRequest(for function: AIFunction, apiKey: String) async throws -> String {
         let prompt = buildContextualPrompt(for: function)
         let (systemPrompt, temperature, maxTokens) = getRequestParameters(for: function)
 

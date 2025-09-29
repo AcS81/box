@@ -44,6 +44,138 @@ extension AIService {
         let function = AIFunction.generateMirrorCard(goal: goal, context: context)
         return try await processRequest(function, responseType: MirrorCardResponse.self)
     }
+
+    // MARK: - Intent Routing
+
+    func processUnifiedMessage(_ message: String, goal: Goal? = nil, context: AIContext) async throws -> UnifiedChatResponse {
+        // Parse the message for intents
+        let intent = parseIntent(from: message, goal: goal)
+
+        switch intent {
+        case .deleteGoal(let targetGoal):
+            return UnifiedChatResponse(
+                message: "I'll delete the goal '\(targetGoal.title)' for you.",
+                intent: .delete(targetGoal),
+                requiresConfirmation: true
+            )
+
+        case .completeGoal(let targetGoal):
+            return UnifiedChatResponse(
+                message: "Great! I'll mark '\(targetGoal.title)' as completed.",
+                intent: .complete(targetGoal),
+                requiresConfirmation: false
+            )
+
+        case .editGoal(let targetGoal, let changes):
+            return UnifiedChatResponse(
+                message: "I'll update '\(targetGoal.title)' with your changes.",
+                intent: .edit(targetGoal, changes),
+                requiresConfirmation: false
+            )
+
+        case .chat:
+            // Regular chat - route to appropriate chat function
+            if let goal = goal {
+                let response = try await chatWithGoal(message: message, goal: goal, context: context)
+                return UnifiedChatResponse(message: response, intent: nil, requiresConfirmation: false)
+            } else {
+                // General management chat
+                let response = try await processGeneralManagement(message: message, context: context)
+                return UnifiedChatResponse(message: response, intent: nil, requiresConfirmation: false)
+            }
+        }
+    }
+
+    private func parseIntent(from message: String, goal: Goal?) -> ChatIntent {
+        let lowercased = message.lowercased()
+
+        // Delete intents
+        if lowercased.contains("delete") || lowercased.contains("remove") || lowercased.contains("trash") {
+            if lowercased.contains("this") || lowercased.contains("goal"), let goal = goal {
+                return .deleteGoal(goal)
+            }
+        }
+
+        // Complete intents
+        if lowercased.contains("complete") || lowercased.contains("done") || lowercased.contains("finish") {
+            if lowercased.contains("this") || lowercased.contains("goal"), let goal = goal {
+                return .completeGoal(goal)
+            }
+        }
+
+        // Edit intents
+        if lowercased.contains("edit") || lowercased.contains("change") || lowercased.contains("update") || lowercased.contains("modify") {
+            if let goal = goal {
+                let changes = extractEditChanges(from: message)
+                return .editGoal(goal, changes)
+            }
+        }
+
+        return .chat
+    }
+
+    private func extractEditChanges(from message: String) -> GoalEditChanges {
+        // Simple extraction logic - could be made more sophisticated
+        var changes = GoalEditChanges()
+
+        let lowercased = message.lowercased()
+
+        // Extract title changes
+        if let titleMatch = message.range(of: "title to \"([^\"]+)\"", options: .regularExpression) {
+            changes.title = String(message[titleMatch]).replacingOccurrences(of: "title to \"", with: "").replacingOccurrences(of: "\"", with: "")
+        }
+
+        // Extract priority changes
+        if lowercased.contains("priority") {
+            if lowercased.contains("now") {
+                changes.priority = .now
+            } else if lowercased.contains("next") {
+                changes.priority = .next
+            } else if lowercased.contains("later") {
+                changes.priority = .later
+            }
+        }
+
+        return changes
+    }
+
+    private func processGeneralManagement(message: String, context: AIContext) async throws -> String {
+        // For now, use the existing reorder logic or general chat
+        // This could be expanded to handle various management tasks
+        if message.lowercased().contains("reorder") || message.lowercased().contains("sort") {
+            let response = try await reorderCards(context.recentGoals, instruction: message, context: context)
+            return response.reasoning
+        } else {
+            // Generic management response - this could be expanded
+            return "I understand you want to manage your goals. Could you be more specific about what you'd like me to help you with?"
+        }
+    }
+}
+
+enum ChatIntent {
+    case deleteGoal(Goal)
+    case completeGoal(Goal)
+    case editGoal(Goal, GoalEditChanges)
+    case chat
+}
+
+struct UnifiedChatResponse {
+    let message: String
+    let intent: LifecycleIntent?
+    let requiresConfirmation: Bool
+}
+
+enum LifecycleIntent {
+    case delete(Goal)
+    case complete(Goal)
+    case edit(Goal, GoalEditChanges)
+}
+
+struct GoalEditChanges {
+    var title: String?
+    var content: String?
+    var category: String?
+    var priority: Goal.Priority?
 }
 
 extension Goal {

@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import SwiftData
 
 struct GoalChatView: View {
     @Bindable var goal: Goal
@@ -19,7 +20,6 @@ struct GoalChatView: View {
     
     @StateObject private var voiceService = VoiceService()
     @StateObject private var userContextService = UserContextService.shared
-    @Query private var allGoals: [Goal]
 
     private var aiService: AIService { AIService.shared }
     
@@ -255,7 +255,7 @@ struct GoalChatView: View {
             isProcessing = true
             
             do {
-                let context = userContextService.buildContext(from: allGoals)
+                let context = userContextService.buildContext(from: currentGoals())
                 let response = try await aiService.chatWithGoal(
                     message: currentMessage,
                     goal: goal,
@@ -293,6 +293,13 @@ struct GoalChatView: View {
             
             isProcessing = false
         }
+    }
+}
+
+private extension GoalChatView {
+    func currentGoals() -> [Goal] {
+        let descriptor = FetchDescriptor<Goal>()
+        return (try? modelContext.fetch(descriptor)) ?? []
     }
 }
 
@@ -360,11 +367,12 @@ extension RoundedRectangle {
 }
 
 struct AnyShape: Shape {
-    private let makePath: (CGRect) -> Path
+    private let makePath: @Sendable (CGRect) -> Path
     
     init<S: Shape>(_ shape: S) {
+        let baseShape = shape
         makePath = { rect in
-            shape.path(in: rect)
+            baseShape.path(in: rect)
         }
     }
     

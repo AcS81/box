@@ -12,14 +12,26 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     
     @AppStorage("userPreferredName") private var userPreferredName = ""
-    @AppStorage("openAIKey") private var openAIKey = ""
     @AppStorage("enableHaptics") private var enableHaptics = true
     @AppStorage("enableSounds") private var enableSounds = true
     @AppStorage("defaultPriority") private var defaultPriority = "next"
     @AppStorage("defaultCategory") private var defaultCategory = "General"
     
-    @State private var showingAPIKeyAlert = false
+    @StateObject private var secretsService = SecretsService.shared
+    @State private var showingAPIKeySheet = false
     @State private var tempAPIKey = ""
+    @State private var showingRemoveConfirmation = false
+
+    private var hasAPIKey: Bool {
+        guard let key = secretsService.openAIKey else { return false }
+        return !key.isEmpty
+    }
+
+    private var maskedAPIKey: String {
+        guard let key = secretsService.openAIKey, !key.isEmpty else { return "Not configured" }
+        let suffix = key.suffix(4)
+        return "••••••••••\(suffix)"
+    }
     
     var body: some View {
         NavigationStack {
@@ -52,16 +64,16 @@ struct SettingsView: View {
                                     Text("OpenAI API Key")
                                         .font(.subheadline)
                                         .fontWeight(.medium)
-                                    Text(openAIKey.isEmpty ? "Not configured" : "••••••••••••")
+                                    Text(maskedAPIKey)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                                 
                                 Spacer()
                                 
-                                Button(openAIKey.isEmpty ? "Add" : "Update") {
-                                    tempAPIKey = openAIKey
-                                    showingAPIKeyAlert = true
+                                Button(hasAPIKey ? "Update" : "Add") {
+                                    tempAPIKey = secretsService.openAIKey ?? ""
+                                    showingAPIKeySheet = true
                                 }
                                 .font(.subheadline)
                                 .fontWeight(.medium)
@@ -70,6 +82,21 @@ struct SettingsView: View {
                                 .padding(.vertical, 8)
                                 .background(Color.blue)
                                 .clipShape(Capsule())
+                            }
+
+                            if hasAPIKey {
+                                Button(role: .destructive) {
+                                    showingRemoveConfirmation = true
+                                } label: {
+                                    HStack {
+                                        Text("Remove Stored Key")
+                                            .font(.subheadline)
+                                        Spacer()
+                                        Image(systemName: "trash")
+                                            .font(.caption)
+                                    }
+                                }
+                                .tint(.red)
                             }
                             
                             Divider()
@@ -243,20 +270,32 @@ struct SettingsView: View {
                 }
             }
         }
-        .alert("OpenAI API Key", isPresented: $showingAPIKeyAlert) {
-            TextField("sk-...", text: $tempAPIKey)
-                .textFieldStyle(.roundedBorder)
-            
-            Button("Cancel", role: .cancel) {
-                tempAPIKey = ""
+        .sheet(isPresented: $showingAPIKeySheet) {
+            NavigationStack {
+                APIKeyEntrySheet(
+                    apiKey: $tempAPIKey,
+                    onSave: { key in
+                        secretsService.updateOpenAIKey(key)
+                        tempAPIKey = ""
+                        showingAPIKeySheet = false
+                    },
+                    onCancel: {
+                        tempAPIKey = ""
+                        showingAPIKeySheet = false
+                    }
+                )
             }
-            
-            Button("Save") {
-                openAIKey = tempAPIKey
-                // Store securely in keychain in production
+            .presentationDetents([.medium])
+        }
+        .confirmationDialog(
+            "Remove stored OpenAI API key?",
+            isPresented: $showingRemoveConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Key", role: .destructive) {
+                secretsService.updateOpenAIKey(nil)
             }
-        } message: {
-            Text("Enter your OpenAI API key to enable AI features")
+            Button("Cancel", role: .cancel) { }
         }
     }
 }
@@ -276,6 +315,53 @@ struct SectionHeader: View {
                 .foregroundStyle(.primary)
             
             Spacer()
+        }
+    }
+}
+
+struct APIKeyEntrySheet: View {
+    @Binding var apiKey: String
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    @FocusState private var isFieldFocused: Bool
+
+    var body: some View {
+        Form {
+            Section("OpenAI API Key") {
+                TextField("sk-...", text: $apiKey, axis: .vertical)
+                    .textInputAutocapitalization(.never)
+                    .disableAutocorrection(true)
+                    .keyboardType(.asciiCapable)
+                    .focused($isFieldFocused)
+                    .lineLimit(1...3)
+            }
+
+            Section {
+                Button(role: .cancel) {
+                    onCancel()
+                } label: {
+                    Label("Cancel", systemImage: "xmark")
+                }
+
+                Button {
+                    guard !apiKey.trimmed.isEmpty else {
+                        onCancel()
+                        return
+                    }
+                    onSave(apiKey.trimmed)
+                } label: {
+                    Label("Save Key", systemImage: "checkmark.circle.fill")
+                }
+                .disabled(apiKey.trimmed.isEmpty)
+            }
+        }
+        .navigationTitle("Configure AI")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                isFieldFocused = true
+            }
         }
     }
 }
