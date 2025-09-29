@@ -1,0 +1,6 @@
+/* InfoPlist.strings */
+NSMicrophoneUsageDescription = "YOU AND GOALS needs microphone access to let you speak your goals using voice input.";
+NSSpeechRecognitionUsageDescription = "YOU AND GOALS uses speech recognition to convert your voice into text for creating goals.";
+NSCalendarsFullAccessUsageDescription = "YOU AND GOALS needs calendar access to intelligently schedule time for your goals.";
+
+
