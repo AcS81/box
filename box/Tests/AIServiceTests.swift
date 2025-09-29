@@ -6,7 +6,6 @@
 //
 
 import Foundation
-@testable import box
 
 // Note: This would normally use XCTest in a proper iOS test target
 // For now, these are example test methods that demonstrate the testing approach
