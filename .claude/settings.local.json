@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(swift build)",
-      "Bash(xcodebuild:*)"
+      "Bash(xcodebuild:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(plutil:*)",
+      "Bash(xargs cat:*)",
+      "Bash(xcrun simctl list:*)"
     ],
     "deny": [],
     "ask": []

@@ -13,18 +13,19 @@ struct boxApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Goal.self,
-            ChatMessage.self,
+            ChatEntry.self,  // Unified chat model
             AIMirrorCard.self,
+            AIMirrorSnapshot.self,
             GoalSnapshot.self,
             GoalRevision.self,
             ScheduledEventLink.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-        
+
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+                fatalError("Could not create ModelContainer: \(error)")
         }
     }()
     

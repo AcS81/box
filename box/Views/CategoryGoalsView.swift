@@ -30,36 +30,65 @@ struct CategorySection: View {
     let goals: [Goal]
     @State private var isExpanded = true
 
+    private var activeGoalsCount: Int {
+        goals.filter { $0.activationState == .active }.count
+    }
+
+    private var lockedGoalsCount: Int {
+        goals.filter { $0.isLocked }.count
+    }
+
+    private var averageProgress: Double {
+        guard !goals.isEmpty else { return 0 }
+        let total = goals.reduce(0.0) { $0 + $1.progress }
+        return total / Double(goals.count)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Category Header
             Button(action: {
                 withAnimation(.smoothSpring) {
                     isExpanded.toggle()
                 }
             }) {
-                HStack {
-                    Image(systemName: "folder.fill")
-                        .foregroundStyle(.blue)
-                        .font(.title3)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Label(category, systemImage: "folder.fill")
+                            .font(.title3.weight(.semibold))
+                            .labelStyle(.titleAndIcon)
 
-                    Text(category)
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.primary)
+                        Spacer()
 
-                    Text("(\(goals.count))")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        Capsule()
+                            .fill(Color.primary.opacity(0.08))
+                            .overlay(
+                                Text("\(goals.count) goals")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 12)
+                            )
+                            .frame(height: 28)
 
-                    Spacer()
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(6)
+                            .background(Circle().fill(Color.primary.opacity(0.08)))
+                    }
 
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                        .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                    HStack(spacing: 12) {
+                        categoryMetric(title: "Active", value: "\(activeGoalsCount)")
+                        categoryMetric(title: "Locked", value: "\(lockedGoalsCount)")
+                        categoryMetric(title: "Avg", value: "\(Int(averageProgress * 100))%")
+                    }
+
+                    ProgressView(value: averageProgress)
+                        .progressViewStyle(.linear)
+                        .tint(.accentColor)
                 }
-                .contentShape(Rectangle())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .liquidGlassCard(cornerRadius: 26, tint: Color.accentColor.opacity(0.22))
             }
             .buttonStyle(.plain)
 
@@ -69,10 +98,29 @@ struct CategorySection: View {
                         GoalCardView(goal: goal)
                     }
                 }
+                .padding(.top, 6)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(.horizontal)
+    }
+
+    private func categoryMetric(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            Text(title.uppercased())
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+        )
     }
 }
 
@@ -102,7 +150,7 @@ struct CategoryFilterView: View {
                     .background(
                         selectedCategory == nil ?
                         Color.blue :
-                        Color(.secondarySystemBackground)
+                        Color.panelBackground
                     )
                     .clipShape(Capsule())
                 }
@@ -126,7 +174,7 @@ struct CategoryFilterView: View {
                         .background(
                             selectedCategory == category ?
                             Color.blue :
-                            Color(.secondarySystemBackground)
+                            Color.panelBackground
                         )
                         .clipShape(Capsule())
                     }

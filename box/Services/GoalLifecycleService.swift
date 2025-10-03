@@ -34,6 +34,9 @@ final class GoalLifecycleService: ObservableObject {
     private let aiService: AIService
     private let calendarService: CalendarService
     private let userContextService: UserContextService
+    private let minimumUpcomingSessions = 3
+    private let scheduleMaintenanceInterval: TimeInterval = 3600 // 1 hour
+    private var scheduleMaintenanceTask: Task<Void, Never>?
 
     init(
         aiService: AIService,
@@ -45,6 +48,10 @@ final class GoalLifecycleService: ObservableObject {
         self.userContextService = userContextService
     }
 
+    deinit {
+        scheduleMaintenanceTask?.cancel()
+    }
+
     func isProcessing(goalID: Goal.ID) -> Bool {
         processingGoals.contains(goalID)
     }
@@ -54,7 +61,7 @@ final class GoalLifecycleService: ObservableObject {
         lastError = nil
         setProcessing(goal.id, isProcessing: true)
 
-        let context = userContextService.buildContext(from: goals)
+        let context = await userContextService.buildContext(from: goals)
 
         var summary: String?
         do {
@@ -63,7 +70,14 @@ final class GoalLifecycleService: ObservableObject {
             lastError = error.localizedDescription
         }
 
-        let snapshot = GoalSnapshot(title: goal.title, content: goal.content, aiSummary: summary)
+        let snapshot = GoalSnapshot(
+            title: goal.title,
+            content: goal.content,
+            aiSummary: summary,
+            category: goal.category,
+            priority: goal.priority.rawValue,
+            progress: goal.progress
+        )
         modelContext.insert(snapshot)
         snapshot.goalID = goal.id
         goal.lock(with: snapshot)
@@ -87,7 +101,7 @@ final class GoalLifecycleService: ObservableObject {
         setProcessing(goal.id, isProcessing: true)
         defer { setProcessing(goal.id, isProcessing: false) }
 
-        let context = userContextService.buildContext(from: goals)
+        let context = await userContextService.buildContext(from: goals)
         let input = "Regenerate this goal with a refined framing, clear description, and motivational tone.\nTitle: \(goal.title)\nDescription: \(goal.content)"
 
         let response = try await aiService.createGoal(from: input, context: context)
@@ -96,6 +110,7 @@ final class GoalLifecycleService: ObservableObject {
         goal.content = response.content
         goal.category = response.category
         goal.priority = Goal.Priority(rawValue: response.priority.capitalized) ?? goal.priority
+        GoalCreationMapper.apply(response, to: goal, referenceDate: .now, modelContext: modelContext)
         goal.recordRegeneration(summary: "Card regenerated", rationale: "AI provided refreshed framing")
         goal.updatedAt = .now
     }
@@ -225,13 +240,156 @@ final class GoalLifecycleService: ObservableObject {
         await refreshMirrorCard(for: goal, within: goals, modelContext: modelContext, tips: plan.tips)
     }
 
+    // MARK: - Schedule Maintenance
+
+    func startScheduleMaintenance(goalsProvider: @escaping () -> [Goal], modelContext: ModelContext) {
+        stopScheduleMaintenance()
+
+        scheduleMaintenanceTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                let snapshot = goalsProvider()
+                await self.syncActiveSchedules(goals: snapshot, modelContext: modelContext)
+
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(self.scheduleMaintenanceInterval * 1_000_000_000))
+                } catch {
+                    break
+                }
+            }
+        }
+    }
+
+    func stopScheduleMaintenance() {
+        scheduleMaintenanceTask?.cancel()
+        scheduleMaintenanceTask = nil
+    }
+
+    func syncActiveSchedules(goals: [Goal], modelContext: ModelContext) async {
+        guard await calendarService.requestAccess() else {
+            lastError = LifecycleError.calendarAccessDenied.errorDescription
+            return
+        }
+
+        let now = Date()
+        let activeGoals = goals.filter { $0.activationState == .active && $0.progress < 1.0 }
+
+        for goal in activeGoals {
+            var upcomingLinks: [ScheduledEventLink] = []
+            var expiredLinks: [ScheduledEventLink] = []
+
+            for link in goal.scheduledEvents {
+                if linkHasConcluded(link, relativeTo: now) {
+                    expiredLinks.append(link)
+                } else {
+                    upcomingLinks.append(link)
+                }
+            }
+
+            if !expiredLinks.isEmpty {
+                for link in expiredLinks {
+                    try? await calendarService.deleteEvent(with: link.eventIdentifier)
+                    goal.unlinkScheduledEvent(withIdentifier: link.eventIdentifier)
+                    modelContext.delete(link)
+                }
+                goal.updatedAt = .now
+            }
+
+            let needed = max(0, minimumUpcomingSessions - upcomingLinks.count)
+            if needed > 0 {
+                await scheduleAdditionalSessions(
+                    for: goal,
+                    neededCount: needed,
+                    within: goals,
+                    modelContext: modelContext,
+                    referenceDate: now
+                )
+            }
+        }
+    }
+
+    private func linkHasConcluded(_ link: ScheduledEventLink, relativeTo now: Date) -> Bool {
+        if let endDate = link.endDate {
+            return endDate <= now
+        }
+
+        if let startDate = link.startDate {
+            return startDate <= now
+        }
+
+        return true
+    }
+
+    private func scheduleAdditionalSessions(
+        for goal: Goal,
+        neededCount: Int,
+        within goals: [Goal],
+        modelContext: ModelContext,
+        referenceDate now: Date
+    ) async {
+        do {
+            let plan = try await calendarService.generateSmartSchedule(for: goal, goals: goals)
+            guard !plan.events.isEmpty else { return }
+
+            var existingStartKeys = Set(
+                goal.scheduledEvents.compactMap { link -> Int? in
+                    guard let date = link.startDate else { return nil }
+                    return Int(date.timeIntervalSinceReferenceDate / 60.0)
+                }
+            )
+
+            var created = 0
+
+            for event in plan.events.sorted(by: { $0.startDate < $1.startDate }) {
+                guard event.startDate > now else { continue }
+
+                let startKey = Int(event.startDate.timeIntervalSinceReferenceDate / 60.0)
+                if existingStartKeys.contains(startKey) {
+                    continue
+                }
+
+                let identifier = try await calendarService.createEvent(
+                    title: event.title,
+                    startDate: event.startDate,
+                    duration: event.duration,
+                    notes: event.notes
+                )
+
+                let link = ScheduledEventLink(
+                    eventIdentifier: identifier,
+                    status: .confirmed,
+                    startDate: event.startDate,
+                    endDate: event.startDate.addingTimeInterval(event.duration)
+                )
+                link.goalID = goal.id
+                modelContext.insert(link)
+                goal.linkScheduledEvent(link)
+
+                existingStartKeys.insert(startKey)
+                created += 1
+
+                if created >= neededCount {
+                    break
+                }
+            }
+
+            if created > 0 {
+                goal.updatedAt = .now
+            }
+        } catch {
+            lastError = error.localizedDescription
+            print("❌ Failed to top up schedule for '\(goal.title)': \(error.localizedDescription)")
+        }
+    }
+
     private func refreshMirrorCard(
         for goal: Goal,
         within goals: [Goal],
         modelContext: ModelContext,
         tips: [String]
     ) async {
-        let context = userContextService.buildContext(from: goals)
+        let context = await userContextService.buildContext(from: goals)
 
         do {
             let response = try await aiService.generateMirrorCard(for: goal, context: context)
@@ -260,6 +418,29 @@ final class GoalLifecycleService: ObservableObject {
             card.aiInterpretation = response.aiInterpretation
             card.suggestedActions = actions
             card.confidence = response.confidence
+            card.emotionalTone = response.emotionalTone
+            card.insights = response.insights ?? []
+
+            let snapshot = AIMirrorSnapshot(
+                aiInterpretation: response.aiInterpretation,
+                suggestedActions: actions,
+                confidence: response.confidence,
+                emotionalTone: response.emotionalTone,
+                insights: response.insights ?? [],
+                relatedGoalId: goal.id
+            )
+            snapshot.capturedAt = Date()
+            modelContext.insert(snapshot)
+            card.snapshots.append(snapshot)
+
+            if card.snapshots.count > 20 {
+                card.snapshots
+                    .sorted { $0.capturedAt > $1.capturedAt }
+                    .dropFirst(20)
+                    .forEach { oldSnapshot in
+                        modelContext.delete(oldSnapshot)
+                    }
+            }
         } catch {
             lastError = error.localizedDescription
         }
@@ -273,6 +454,29 @@ final class GoalLifecycleService: ObservableObject {
             existing.aiInterpretation = "Goal is paused. Mirror mode will refresh when reactivated."
             existing.suggestedActions = []
             existing.confidence = 0.2
+            existing.emotionalTone = "paused"
+            existing.insights = ["AI mirror on standby until goal resumes"]
+
+            let snapshot = AIMirrorSnapshot(
+                aiInterpretation: existing.aiInterpretation,
+                suggestedActions: [],
+                confidence: 0.2,
+                emotionalTone: "paused",
+                insights: existing.insights,
+                relatedGoalId: goal.id
+            )
+            snapshot.capturedAt = Date()
+            modelContext.insert(snapshot)
+            existing.snapshots.append(snapshot)
+
+            if existing.snapshots.count > 20 {
+                existing.snapshots
+                    .sorted { $0.capturedAt > $1.capturedAt }
+                    .dropFirst(20)
+                    .forEach { oldSnapshot in
+                        modelContext.delete(oldSnapshot)
+                    }
+            }
         }
     }
 

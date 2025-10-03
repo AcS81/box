@@ -15,6 +15,137 @@ extension AIService {
         return try await processRequest(function, responseType: GoalCreationResponse.self)
     }
 
+    // MARK: - Proactive Analysis
+
+    func analyzeNewGoalForActions(_ goal: Goal, context: AIContext) async throws -> ProactiveGoalAnalysis {
+        // Analyze the newly created goal and determine if proactive actions should be taken
+        let analysisPrompt = buildProactiveAnalysisPrompt(for: goal, context: context)
+        let response = try await makeProactiveAnalysisRequest(prompt: analysisPrompt)
+        return try parseProactiveAnalysis(response)
+    }
+
+    private func buildProactiveAnalysisPrompt(for goal: Goal, context: AIContext) -> String {
+        let contextSection = buildContextSection(context)
+
+        return """
+        \(contextSection)
+
+        PROACTIVE GOAL ANALYSIS
+
+        Analyze this newly created goal and determine if automatic actions should be taken:
+
+        Goal Title: "\(goal.title)"
+        Description: \(goal.content.isEmpty ? "No description" : goal.content)
+        Priority: \(goal.priority.rawValue)
+        Category: \(goal.category)
+
+        ANALYSIS CRITERIA:
+
+        1. COMPLEXITY CHECK:
+           - Does this goal mention multiple steps, phases, or stages?
+           - Does it contain words like: "and then", "first", "second", "finally", numbered lists?
+           - Does it span multiple time periods or require sequential actions?
+           → If YES: Suggest "breakdown" action
+
+        2. ACTIVATION CHECK:
+           - Is this a "Now" priority goal?
+           - Is there urgency in the language?
+           → If YES: Suggest "activate_goal" action
+
+        3. CLARITY CHECK:
+           - Is the goal vague or too broad?
+           - Could it benefit from AI refinement?
+           → If YES: Note in reasoning (but don't auto-execute)
+
+        Return as JSON:
+        {
+            "shouldTakeAction": true|false,
+            "confidence": 0.0-1.0,
+            "reasoning": "Clear explanation of why actions are suggested",
+            "suggestedActions": [
+                {"type": "breakdown", "reason": "Goal mentions multiple phases"},
+                {"type": "suggest_activation", "reason": "High priority goal needs scheduling"}
+            ],
+            "userMessage": "Friendly message explaining what AI will do"
+        }
+
+        IMPORTANT:
+        - Only suggest actions with high confidence (>0.7)
+        - Explain reasoning clearly
+        - Be conservative - when in doubt, don't suggest actions
+        - "breakdown" should only be suggested for clearly multi-step goals
+        - "suggest_activation" (not auto-activate) for Now priority goals
+        """
+    }
+
+    private func makeProactiveAnalysisRequest(prompt: String) async throws -> String {
+        let apiKey = currentAPIKey
+        guard !apiKey.isEmpty else { throw AIError.noAPIKey }
+
+        var request = URLRequest(url: URL(string: baseURL)!, timeoutInterval: requestTimeout)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "model": "gpt-4",
+            "messages": [
+                ["role": "system", "content": proactiveAnalysisSystemPrompt],
+                ["role": "user", "content": prompt]
+            ],
+            "temperature": 0.3,
+            "max_tokens": 500
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw AIError.networkError
+        }
+
+        let apiResponse = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        guard let content = apiResponse.choices.first?.message.content, !content.isEmpty else {
+            throw AIError.invalidResponse
+        }
+
+        return content
+    }
+
+    private func parseProactiveAnalysis(_ response: String) throws -> ProactiveGoalAnalysis {
+        let cleanedResponse = cleanJSONResponse(response)
+        let jsonData = cleanedResponse.data(using: .utf8) ?? Data()
+
+        do {
+            return try JSONDecoder().decode(ProactiveGoalAnalysis.self, from: jsonData)
+        } catch {
+            print("❌ Failed to parse proactive analysis: \(error)")
+            // Return safe default
+            return ProactiveGoalAnalysis(
+                shouldTakeAction: false,
+                confidence: 0.0,
+                reasoning: "Could not analyze goal",
+                suggestedActions: [],
+                userMessage: nil
+            )
+        }
+    }
+
+    private var proactiveAnalysisSystemPrompt: String {
+        """
+        You are a proactive AI assistant analyzing goals to determine if automatic actions should be taken.
+
+        Your role:
+        - Analyze goal complexity and structure
+        - Suggest helpful actions ONLY when confident they will benefit the user
+        - Be conservative - it's better to do nothing than to be wrong
+        - Explain your reasoning clearly
+
+        Return valid JSON only, no additional text.
+        """
+    }
+
     func breakdownGoal(_ goal: Goal, context: AIContext) async throws -> GoalBreakdownResponse {
         let function = AIFunction.breakdownGoal(goal: goal, context: context)
         return try await processRequest(function, responseType: GoalBreakdownResponse.self)
@@ -25,8 +156,268 @@ extension AIService {
         return try await processRequest(function)
     }
 
-    func generateCalendarEvents(for goal: Goal, context: AIContext) async throws -> CalendarEventsResponse {
+    // NEW: Chat with actions
+    func chatWithGoalWithActions(message: String, goal: Goal, context: AIContext) async throws -> ChatResponse {
+        let function = AIFunction.chatWithGoal(message: message, goal: goal, context: context)
+        return try await processWithActions(function)
+    }
+
+    // NEW: General chat with actions (for bulk operations)
+    func generalChatWithActions(message: String, context: AIContext, history: [GeneralChatMessage]) async throws -> ChatResponse {
+        let function = AIFunction.generalChat(message: message, history: history, context: context)
+        return try await processWithActions(function)
+    }
+
+    // MARK: - Unified Scope-Based Chat
+
+    /// Unified scope-based chat method - works for general, goal, and subtask contexts
+    func chatWithScope(
+        message: String,
+        scope: ChatEntry.Scope,
+        history: [ChatEntry],
+        context: AIContext
+    ) async throws -> ChatResponse {
+        let scopeContext = buildScopeContext(scope, context)
+        let historyFormatted = formatChatHistory(history)
+
+        let prompt = """
+        \(scopeContext)
+
+        CONVERSATION HISTORY:
+        \(historyFormatted)
+
+        User's current message: "\(message)"
+
+        Act as the user's intelligent goal management assistant. Reference the context and history appropriately. Provide conversational responses and suggest actions when appropriate.
+
+        CRITICAL: You MUST respond with valid JSON in this exact format:
+        {
+            "reply": "Your conversational response here",
+            "actions": [],
+            "requiresConfirmation": false
+        }
+
+        Do NOT include any text before or after the JSON. ONLY return the JSON object.
+        """
+
+        let apiKey = currentAPIKey
+        guard !apiKey.isEmpty else {
+            throw AIError.noAPIKey
+        }
+
+        let response = try await performScopedAPIRequest(
+            prompt: prompt,
+            systemPrompt: actionAwareSystemPrompt,
+            apiKey: apiKey
+        )
+
+        do {
+            let chatResponse = try parseJSONResponse(response, as: ChatResponse.self)
+            return chatResponse
+        } catch {
+            print("❌ Chat parsing error: \(error)")
+            print("📄 Response: \(response)")
+            throw error
+        }
+    }
+
+    private func buildScopeContext(_ scope: ChatEntry.Scope, _ context: AIContext) -> String {
+        let portfolioSection = buildGoalPortfolioSection(context)
+        let contextSection = buildContextSection(context)
+
+        switch scope {
+        case .general:
+            return """
+            \(contextSection)
+
+            CONVERSATION SCOPE: GENERAL CHAT
+            You are the user's command center. Create new goals instantly, take decisive actions on any goal or subtask listed below, run bulk operations, and deliver portfolio-wide insights without asking clarifying questions.
+
+            GOAL PORTFOLIO:
+            \(portfolioSection)
+
+            Capabilities from this scope:
+            - Instant goal creation (no goalId needed)
+            - Single-goal operations using the goalId from this portfolio
+            - Subtask micromanagement when the user specifies goal + subtask IDs
+            - Bulk actions across any combination of goals (bulk_delete, bulk_archive, bulk_complete, reorder_goals, merge_goals when available)
+            - Portfolio queries, prioritization advice, and cross-goal recommendations
+            """
+
+        case .goal(let goalId):
+            guard let snapshot = context.goalSnapshots.first(where: { $0.id == goalId.uuidString }) else {
+                return """
+                \(contextSection)
+
+                CONVERSATION SCOPE: GOAL-SPECIFIC CHAT
+                Goal not found in current context.
+                """
+            }
+
+            let goalStructure = buildGoalStructureFromSnapshot(snapshot)
+
+            return """
+            \(contextSection)
+
+            CONVERSATION SCOPE: GOAL-SPECIFIC CHAT
+            User is chatting with this specific goal: "\(snapshot.title)"
+
+            \(goalStructure)
+
+            This is the dedicated assistant for this goal. Focus on helping the user make progress on THIS specific goal.
+            Reference subtasks, parent context, and siblings when relevant.
+            """
+
+        case .subgoal(let subgoalId):
+            guard let snapshot = context.goalSnapshots.first(where: { $0.id == subgoalId.uuidString }) else {
+                return """
+                \(contextSection)
+
+                CONVERSATION SCOPE: SUBTASK CHAT
+                Subtask not found in current context.
+                """
+            }
+
+            let goalStructure = buildGoalStructureFromSnapshot(snapshot)
+
+            let parentInfo: String
+            if let parent = snapshot.parent {
+                parentInfo = "Parent goal: \(parent.title) [status: \(parent.activationState), progress: \(Int(parent.progress * 100))%]"
+            } else {
+                parentInfo = "No parent goal"
+            }
+
+            let siblingsInfo: String
+            if !snapshot.siblings.isEmpty {
+                let siblingList = snapshot.siblings.prefix(3).map { "• \($0.title) (\(Int($0.progress * 100))%)" }.joined(separator: "\n")
+                siblingsInfo = "Sibling subtasks:\n\(siblingList)"
+            } else {
+                siblingsInfo = "No sibling subtasks"
+            }
+
+            return """
+            \(contextSection)
+
+            CONVERSATION SCOPE: SUBTASK CHAT
+            User is chatting with this subtask: "\(snapshot.title)"
+
+            \(goalStructure)
+
+            \(parentInfo)
+            \(siblingsInfo)
+
+            This is a subtask assistant. Help the user complete this specific subtask while being aware of the parent goal context.
+            """
+        }
+    }
+
+    private func buildGoalStructureFromSnapshot(_ snapshot: ChatGoalSnapshot) -> String {
+        var structure = """
+        GOAL DETAILS:
+        - Goal ID: \(snapshot.id) (USE THIS EXACT ID IN ALL ACTIONS for this goal)
+        - Title: \(snapshot.title)
+        - Status: \(snapshot.activationState)
+        - Locked: \(snapshot.isLocked ? "Yes (cannot modify)" : "No")
+        - Progress: \(Int(snapshot.progress * 100))%
+        - Priority: \(snapshot.priority)
+        - Category: \(snapshot.category)
+        - Calendar Events: \(snapshot.eventCount)
+        """
+
+        if !snapshot.content.isEmpty {
+            structure += "\n- Description: \(snapshot.content)"
+        }
+
+        if snapshot.totalSubgoalCount > 0 {
+            structure += "\n\nSUBTASK TREE: \(snapshot.totalSubgoalCount) total (\(snapshot.atomicSubgoalCount) atomic, depth \(snapshot.maxSubgoalDepth))"
+            let (description, displayed) = renderSubtaskTreeDescription(for: snapshot, limit: 24)
+            if !description.isEmpty {
+                structure += "\n" + description
+            }
+
+            let remaining = snapshot.totalSubgoalCount - displayed
+            if remaining > 0 {
+                structure += "\n  ... +\(remaining) more nodes"
+            }
+        }
+
+        structure += "\n\nAVAILABLE ACTIONS:\n" + snapshot.availableActions.prefix(12).joined(separator: ", ")
+        if snapshot.availableActions.count > 12 {
+            structure += ", +\(snapshot.availableActions.count - 12) more"
+        }
+
+        return structure
+    }
+
+    private func formatChatHistory(_ history: [ChatEntry]) -> String {
+        guard !history.isEmpty else {
+            return "No previous conversation yet."
+        }
+
+        let recentMessages = history.suffix(12)
+        return recentMessages.map { entry in
+            let role = entry.isUser ? "User" : "AI"
+            let timestamp = entry.timestamp.formatted(date: .omitted, time: .shortened)
+            let scopeLabel = entry.scope.scopeLabel
+            return "\(timestamp) [\(scopeLabel)] \(role): \(entry.content)"
+        }.joined(separator: "\n")
+    }
+
+    private func performScopedAPIRequest(
+        prompt: String,
+        systemPrompt: String,
+        apiKey: String
+    ) async throws -> String {
+        return try await retryWithExponentialBackoff(maxRetries: 3) {
+            var request = URLRequest(url: URL(string: self.baseURL)!, timeoutInterval: self.requestTimeout)
+            request.httpMethod = "POST"
+            request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+
+            let body: [String: Any] = [
+                "model": "gpt-4",
+                "messages": [
+                    ["role": "system", "content": systemPrompt],
+                    ["role": "user", "content": prompt]
+                ],
+                "temperature": 0.4,
+                "max_tokens": 1500
+            ]
+
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw AIError.networkError
+            }
+
+            switch httpResponse.statusCode {
+            case 200:
+                let apiResponse = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+                guard let content = apiResponse.choices.first?.message.content, !content.isEmpty else {
+                    throw AIError.invalidResponse
+                }
+                return content
+            case 429:
+                throw AIError.rateLimited
+            case 401:
+                throw AIError.noAPIKey
+            case 400:
+                print("❌ Bad request to OpenAI API")
+                throw AIError.invalidFormat
+            default:
+                print("❌ OpenAI API error: \(httpResponse.statusCode)")
+                throw AIError.invalidResponse
+            }
+        }
+    }
+
+    func generateCalendarEvents(for goal: Goal, context: AIContext, existingEvents: [String] = []) async throws -> CalendarEventsResponse {
         let function = AIFunction.generateCalendarEvents(goal: goal, context: context)
+
+        // If we have existing events, we need to modify the prompt
+        // For now, just pass through - the prompt building in AIService should handle it
         return try await processRequest(function, responseType: CalendarEventsResponse.self)
     }
 
@@ -178,6 +569,21 @@ struct GoalEditChanges {
     var priority: Goal.Priority?
 }
 
+// MARK: - Proactive Analysis Models
+
+struct ProactiveGoalAnalysis: Codable {
+    let shouldTakeAction: Bool
+    let confidence: Double
+    let reasoning: String
+    let suggestedActions: [ProactiveSuggestedAction]
+    let userMessage: String?
+}
+
+struct ProactiveSuggestedAction: Codable {
+    let type: String
+    let reason: String
+}
+
 extension Goal {
     func toDictionary() -> [String: Any] {
         return [
@@ -189,7 +595,8 @@ extension Goal {
             "isActive": isActive,
             "progress": progress,
             "createdAt": createdAt.timeIntervalSince1970,
-            "updatedAt": updatedAt.timeIntervalSince1970
+            "updatedAt": updatedAt.timeIntervalSince1970,
+            "sortOrder": effectiveSortOrder
         ]
     }
 
@@ -231,8 +638,8 @@ extension Goal {
 }
 
 extension AIContext {
-    static func create(from goals: [Goal]) -> AIContext {
-        return UserContextService.shared.buildContext(from: goals)
+    static func create(from goals: [Goal]) async -> AIContext {
+        await UserContextService.shared.buildContext(from: goals)
     }
 
     var contextSummary: String {

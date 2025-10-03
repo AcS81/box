@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct OnboardingView: View {
     @Binding var hasCompletedOnboarding: Bool
@@ -215,8 +218,10 @@ struct OnboardingView: View {
                 }
                 .tag(4)
             }
+            #if os(iOS)
             .tabViewStyle(.page)
             .indexViewStyle(.page(backgroundDisplayMode: .always))
+            #endif
             
             // Skip button
             if currentPage < 4 {
@@ -248,8 +253,12 @@ struct OnboardingView: View {
         hasCompletedOnboarding = true
         
         // Haptic feedback
+        #if os(iOS)
         let notificationFeedback = UINotificationFeedbackGenerator()
         notificationFeedback.notificationOccurred(.success)
+        #elseif os(macOS)
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        #endif
     }
 }
 

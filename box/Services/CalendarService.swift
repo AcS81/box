@@ -31,6 +31,28 @@ class CalendarService: ObservableObject {
             return false
         }
     }
+
+    func fetchExistingEvents(from startDate: Date, to endDate: Date) async throws -> [EKEvent] {
+        guard isAuthorized else {
+            throw CalendarError.notAuthorized
+        }
+
+        let predicate = eventStore.predicateForEvents(
+            withStart: startDate,
+            end: endDate,
+            calendars: nil
+        )
+
+        return eventStore.events(matching: predicate)
+    }
+
+    func formatBusySlots(_ events: [EKEvent]) -> [String] {
+        return events.map { event in
+            let start = event.startDate.formatted(date: .abbreviated, time: .shortened)
+            let end = event.endDate.formatted(date: .omitted, time: .shortened)
+            return "\(start) - \(end): \(event.title ?? "Busy")"
+        }
+    }
     
     @discardableResult
     func createEvent(title: String, startDate: Date, duration: TimeInterval, notes: String? = nil) async throws -> String {
@@ -53,11 +75,22 @@ class CalendarService: ObservableObject {
     }
     
     func generateSmartSchedule(for goal: Goal, goals: [Goal] = []) async throws -> ActivationPlan {
-        // AI-powered scheduling based on goal priority and user patterns
-        let context = UserContextService.shared.buildContext(from: goals)
+        // Fetch existing events to avoid conflicts
+        let startDate = Date()
+        let endDate = Calendar.current.date(byAdding: .day, value: 14, to: startDate) ?? startDate
+        let existingEvents = (try? await fetchExistingEvents(from: startDate, to: endDate)) ?? []
+        let busySlots = formatBusySlots(existingEvents)
+
+        // Build context with calendar data
+        var context = await UserContextService.shared.buildContext(from: goals)
+        context.existingCalendarEvents = busySlots
 
         do {
-            let aiResponse = try await AIService.shared.generateCalendarEvents(for: goal, context: context)
+            let aiResponse = try await AIService.shared.generateCalendarEvents(
+                for: goal,
+                context: context,
+                existingEvents: busySlots
+            )
 
             // Parse AI response and create proposed events
             let proposedEvents: [ProposedEvent] = aiResponse.events.map { event in
@@ -101,39 +134,76 @@ class CalendarService: ObservableObject {
     
     private func suggestOptimalTime(for goal: Goal, timeSlot: String? = nil) -> Date {
         let calendar = Calendar.current
-        var components = calendar.dateComponents([.year, .month, .day], from: Date())
+        let now = Date()
 
-        // Use AI-suggested time slot if available
-        if let timeSlot = timeSlot {
-            switch timeSlot.lowercased() {
+        // Helper to guarantee the resulting date is in the future
+        func futureDate(from date: Date) -> Date {
+            if date > now { return date }
+            return calendar.date(byAdding: .day, value: 1, to: date) ?? now.addingTimeInterval(86400)
+        }
+
+        if let timeSlot = timeSlot?.lowercased() {
+            let targetHour: Int
+            switch timeSlot {
             case "morning":
-                components.hour = 9
+                targetHour = 9
             case "afternoon":
-                components.hour = 14
+                targetHour = 14
             case "evening":
-                components.hour = 18
+                targetHour = 18
             default:
-                components.hour = 10 // Default to mid-morning
+                targetHour = 10
             }
-        } else {
-            // Use priority-based scheduling
-            switch goal.priority {
-            case .now:
-                // Schedule for next available hour
-                components.hour = calendar.component(.hour, from: Date()) + 1
-            case .next:
-                // Schedule for tomorrow morning
-                components.day! += 1
-                components.hour = 9
-            case .later:
-                // Schedule for next week
-                components.day! += 7
-                components.hour = 14
+
+            let components = DateComponents(hour: targetHour, minute: 0)
+            if let nextMatch = calendar.nextDate(after: now, matching: components, matchingPolicy: .nextTime) {
+                return nextMatch
+            }
+
+            let todayComponents = calendar.dateComponents([.year, .month, .day], from: now)
+            var fallbackComponents = todayComponents
+            fallbackComponents.hour = targetHour
+            fallbackComponents.minute = 0
+            let fallback = calendar.date(from: fallbackComponents) ?? now.addingTimeInterval(3600)
+            return futureDate(from: fallback)
+        }
+
+        switch goal.priority {
+        case .now:
+            let minute = calendar.component(.minute, from: now)
+            let minutesUntilNextHour = (60 - minute) % 60
+            let base: Date
+            if minutesUntilNextHour == 0 {
+                base = calendar.date(byAdding: .hour, value: 1, to: now) ?? now.addingTimeInterval(3600)
+            } else {
+                base = calendar.date(byAdding: .minute, value: minutesUntilNextHour, to: now) ?? now.addingTimeInterval(Double(minutesUntilNextHour) * 60)
+            }
+            let aligned = calendar.date(bySetting: .minute, value: 0, of: base) ?? base
+            return futureDate(from: aligned)
+
+        case .next:
+            var components = DateComponents()
+            components.hour = 9
+            components.minute = 0
+            var nextMorning = calendar.nextDate(after: now, matching: components, matchingPolicy: .nextTime) ?? now.addingTimeInterval(86400)
+            if calendar.isDate(nextMorning, inSameDayAs: now) {
+                nextMorning = calendar.date(byAdding: .day, value: 1, to: nextMorning) ?? nextMorning.addingTimeInterval(86400)
+            }
+            return futureDate(from: nextMorning)
+
+        case .later:
+            let base = calendar.date(byAdding: .day, value: 7, to: now) ?? now.addingTimeInterval(7 * 86400)
+            var components = calendar.dateComponents([.year, .month, .day], from: base)
+            components.hour = 14
+            components.minute = 0
+            if let scheduled = calendar.date(from: components) {
+                return futureDate(from: scheduled)
             }
         }
 
-        components.minute = 0
-        return calendar.date(from: components) ?? Date()
+        // Fallback: two hours from now, aligned to the top of the hour
+        let fallback = calendar.date(byAdding: .hour, value: 2, to: now) ?? now.addingTimeInterval(7200)
+        return calendar.date(bySetting: .minute, value: 0, of: fallback) ?? fallback
     }
     
     func deleteEvent(with identifier: String) async throws {

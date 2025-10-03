@@ -50,7 +50,7 @@ struct SettingsView: View {
                                 .textFieldStyle(.roundedBorder)
                         }
                         .padding()
-                        .background(Color(.secondarySystemBackground))
+                        .background(Color.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     
@@ -113,7 +113,7 @@ struct SettingsView: View {
                             }
                         }
                         .padding()
-                        .background(Color(.secondarySystemBackground))
+                        .background(Color.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     
@@ -183,7 +183,7 @@ struct SettingsView: View {
                             }
                             .padding()
                         }
-                        .background(Color(.secondarySystemBackground))
+                        .background(Color.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     
@@ -241,7 +241,7 @@ struct SettingsView: View {
                             .foregroundStyle(.primary)
                         }
                         .padding()
-                        .background(Color(.secondarySystemBackground))
+                        .background(Color.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     
@@ -258,8 +258,9 @@ struct SettingsView: View {
                 }
                 .padding()
             }
-            .background(Color(.systemBackground))
+            .background(Color.cardBackground)
             .navigationTitle("Settings")
+#if os(iOS)
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -269,6 +270,16 @@ struct SettingsView: View {
                     .fontWeight(.medium)
                 }
             }
+#else
+            .toolbar {
+                ToolbarItem(placement: .automatic) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .fontWeight(.medium)
+                }
+            }
+#endif
         }
         .sheet(isPresented: $showingAPIKeySheet) {
             NavigationStack {
@@ -330,9 +341,11 @@ struct APIKeyEntrySheet: View {
         Form {
             Section("OpenAI API Key") {
                 TextField("sk-...", text: $apiKey, axis: .vertical)
+#if os(iOS)
                     .textInputAutocapitalization(.never)
                     .disableAutocorrection(true)
                     .keyboardType(.asciiCapable)
+#endif
                     .focused($isFieldFocused)
                     .lineLimit(1...3)
             }
@@ -357,7 +370,9 @@ struct APIKeyEntrySheet: View {
             }
         }
         .navigationTitle("Configure AI")
+#if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+#endif
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 isFieldFocused = true

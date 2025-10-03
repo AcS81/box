@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 //
 //  AIServiceTests.swift
 //  box
@@ -5,197 +6,220 @@
 //  Created on 29.09.2025.
 //
 
-import Foundation
+import XCTest
+import SwiftData
+@testable import box
 
-// Note: This would normally use XCTest in a proper iOS test target
-// For now, these are example test methods that demonstrate the testing approach
+@MainActor
+final class GoalBreakdownBuilderTests: XCTestCase {
+    private var container: ModelContainer!
+    private var context: ModelContext!
 
-struct AIServiceTests {
-
-    static func testAIContextCreation() {
-        let sampleGoals = [
-            Goal(title: "Learn SwiftUI", category: "Development", priority: .now),
-            Goal(title: "Exercise daily", category: "Health", priority: .next),
-            Goal(title: "Read 12 books", category: "Education", priority: .later)
-        ]
-
-        let context = AIContext(goals: sampleGoals)
-
-        assert(context.recentGoals.count == 3, "Expected 3 recent goals")
-        assert(context.completedGoalsCount == 0, "Expected 0 completed goals")
-        print("✅ AIContext creation test passed")
-    }
-
-    static func testGoalExtensions() {
-        let goal = Goal(title: "Test Goal", priority: .now)
-        goal.progress = 0.5
-
-        // Test basic properties that definitely exist
-        assert(goal.priority == .now, "Expected 'now' priority")
-        assert(goal.title == "Test Goal", "Expected correct title")
-        assert(goal.progress == 0.5, "Expected progress to be 0.5")
-        print("✅ Goal extensions test passed")
-    }
-
-    static func testUserContextService() {
-        let contextService = UserContextService.shared
-        let sampleGoals = [
-            Goal(title: "Goal 1", category: "Work"),
-            Goal(title: "Goal 2", category: "Personal")
-        ]
-
-        let context = contextService.buildContext(from: sampleGoals)
-
-        assert(context.recentGoals.count == 2, "Expected 2 recent goals")
-        assert(context.completedGoalsCount == 0, "Expected 0 completed goals initially")
-        print("✅ UserContextService test passed")
-    }
-
-    static func testJSONResponseCleaning() {
-        let dirtyResponse = "```json\n{\"title\": \"Test\"}\n```"
-        let expectedClean = "{\"title\": \"Test\"}"
-
-        assert(dirtyResponse.contains("json"), "Expected dirty response to contain 'json'")
-        print("✅ JSON response cleaning test setup completed")
-    }
-
-    static func testGoalCreationResponseParsing() {
-        let jsonString = """
-        {
-            "title": "Learn Swift",
-            "content": "Master Swift programming language",
-            "category": "Development",
-            "priority": "now",
-            "suggestedSubgoals": ["Set up Xcode", "Complete tutorial"],
-            "estimatedDuration": "2 weeks",
-            "difficulty": "medium"
-        }
-        """
-
-        let data = jsonString.data(using: .utf8)!
-        let decoder = JSONDecoder()
-
-        do {
-            let response = try decoder.decode(GoalCreationResponse.self, from: data)
-            assert(response.title == "Learn Swift", "Expected title to be 'Learn Swift'")
-            assert(response.priority == "now", "Expected priority to be 'now'")
-            assert(response.suggestedSubgoals.count == 2, "Expected 2 suggested subgoals")
-            print("✅ GoalCreationResponse parsing test passed")
-        } catch {
-            print("❌ Failed to parse GoalCreationResponse: \(error)")
-        }
-    }
-
-    static func testMirrorCardResponseParsing() {
-        let jsonString = """
-        {
-            "aiInterpretation": "User wants to improve coding skills",
-            "suggestedActions": ["Practice daily", "Build projects", "Read documentation"],
-            "confidence": 0.85,
-            "insights": ["Shows commitment to learning", "May need structured approach"],
-            "emotionalTone": "motivated"
-        }
-        """
-
-        let data = jsonString.data(using: .utf8)!
-        let decoder = JSONDecoder()
-
-        do {
-            let response = try decoder.decode(MirrorCardResponse.self, from: data)
-            assert(response.suggestedActions.count == 3, "Expected 3 suggested actions")
-            assert(response.confidence == 0.85, "Expected confidence to be 0.85")
-            assert(response.emotionalTone == "motivated", "Expected emotional tone to be 'motivated'")
-            print("✅ MirrorCardResponse parsing test passed")
-        } catch {
-            print("❌ Failed to parse MirrorCardResponse: \(error)")
-        }
-    }
-
-    static func testErrorHandling() {
-        print("🧪 Testing error handling...")
-
-        // Test UserContextService with empty goals
-        let contextService = UserContextService.shared
-        let emptyContext = contextService.buildContext(from: [])
-        assert(emptyContext.recentGoals.isEmpty, "Expected empty goals array")
-
-        // Test analysis with empty goals
-        let analysis = contextService.analyzeGoalCompletionPattern([])
-        assert(analysis == "No goals to analyze", "Expected no goals message")
-
-        // Test Goal time calculation edge cases
-        let goal = Goal(title: "Test Goal")
-        assert(goal.timeToCompletion == "No progress yet", "Expected no progress message")
-
-        print("✅ Error handling tests passed")
-    }
-
-    static func testModelContainer() {
-        print("🧪 Testing SwiftData model compatibility...")
-
-        // Test Goal model creation
-        let goal = Goal(title: "Test Goal", content: "Test content", category: "Test")
-        assert(goal.title == "Test Goal", "Goal title should match")
-        assert(goal.activationState == .draft, "New goals should be draft")
-        assert(!goal.isLocked, "New goals should not be locked")
-
-        // Test relationships setup
-        let subgoal = Goal(title: "Subgoal", content: "Sub content")
-        subgoal.parent = goal
-
-        // Test AIMirrorCard creation
-        let mirrorCard = AIMirrorCard(title: "Mirror Test", interpretation: "Test interpretation")
-        assert(mirrorCard.confidence == 0.0, "Default confidence should be 0.0")
-
-        print("✅ Model container tests passed")
-    }
-
-    static func testVoiceServiceMock() {
-        print("🧪 Testing voice service basics...")
-
-        let voiceService = VoiceService()
-        assert(!voiceService.isRecording, "Should not be recording initially")
-        assert(voiceService.transcribedText.isEmpty, "Should have empty text initially")
-
-        print("✅ Voice service basic tests passed")
-    }
-
-    static func runAllTests() {
-        print("🧪 Running Comprehensive AI Service Tests...")
-        testAIContextCreation()
-        testGoalExtensions()
-        testUserContextService()
-        testJSONResponseCleaning()
-        testGoalCreationResponseParsing()
-        testMirrorCardResponseParsing()
-        testErrorHandling()
-        testModelContainer()
-        testVoiceServiceMock()
-        print("🎉 All tests completed successfully!")
-    }
-}
-
-// MARK: - Mock Data for Testing
-
-extension AIServiceTests {
-
-    static var sampleContext: AIContext {
-        let goals = [
-            Goal(title: "Complete project", category: "Work", priority: .now),
-            Goal(title: "Exercise", category: "Health", priority: .next)
-        ]
-        return AIContext(goals: goals)
-    }
-
-    static var sampleGoalCreationResponse: GoalCreationResponse {
-        return GoalCreationResponse(
-            title: "Sample Goal",
-            content: "A test goal",
-            category: "Test",
-            priority: "next",
-            suggestedSubgoals: ["Step 1", "Step 2"],
-            estimatedDuration: "1 week",
-            difficulty: "easy"
+    override func setUpWithError() throws {
+        container = try ModelContainer(
+            for: Goal.self,
+                 GoalDependency.self,
+                 GoalSnapshot.self,
+                 GoalRevision.self,
+                 ScheduledEventLink.self,
+                 AIMirrorCard.self,
+                 AIMirrorSnapshot.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
+        context = ModelContext(container)
     }
+
+    override func tearDownWithError() throws {
+        container = nil
+        context = nil
+    }
+
+    func testApplyBuildsHierarchyAndDependencies() throws {
+        let parent = Goal(title: "Launch macOS AI workspace", content: "Ship the nested task orchestration flow", category: "Product", priority: .now)
+        context.insert(parent)
+
+        let response = GoalBreakdownResponse(
+            subtasks: [
+                GoalBreakdownResponse.Node(
+                    id: "design-phase",
+                    title: "Design phase",
+                    description: "Plan the Liquid Glass UI and dependency map",
+                    estimatedHours: 6,
+                    dependencies: [],
+                    difficulty: "medium",
+                    children: [
+                        GoalBreakdownResponse.Node(
+                            id: "design-wireframes",
+                            title: "Create wireframes",
+                            description: "Sketch the multi-level task explorer",
+                            estimatedHours: 2,
+                            dependencies: [],
+                            difficulty: "easy",
+                            children: [],
+                            isAtomic: true
+                        ),
+                        GoalBreakdownResponse.Node(
+                            id: "design-copy",
+                            title: "Draft prompts and copy",
+                            description: "Write AI instructions for subtask generation",
+                            estimatedHours: 1.5,
+                            dependencies: [],
+                            difficulty: "easy",
+                            children: [],
+                            isAtomic: true
+                        )
+                    ],
+                    isAtomic: false
+                ),
+                GoalBreakdownResponse.Node(
+                    id: "implementation",
+                    title: "Implementation",
+                    description: "Build the AI-driven subtask tree with dependency tracking",
+                    estimatedHours: 12,
+                    dependencies: ["design-phase"],
+                    difficulty: "hard",
+                    children: [
+                        GoalBreakdownResponse.Node(
+                            id: "implementation-core",
+                            title: "Build core flow",
+                            description: "Hook GoalBreakdownBuilder into the workspace",
+                            estimatedHours: 5,
+                            dependencies: ["design-wireframes"],
+                            difficulty: "medium",
+                            children: [],
+                            isAtomic: true
+                        ),
+                        GoalBreakdownResponse.Node(
+                            id: "implementation-qa",
+                            title: "QA nested breakdowns",
+                            description: "Validate dependency visualisation and editing",
+                            estimatedHours: 3,
+                            dependencies: ["implementation-core"],
+                            difficulty: "medium",
+                            children: [],
+                            isAtomic: true
+                        )
+                    ],
+                    isAtomic: false
+                )
+            ],
+            recommendedOrder: ["design-phase", "implementation"],
+            totalEstimatedHours: 17.5
+        )
+
+        let result = GoalBreakdownBuilder.apply(response: response, to: parent, in: context)
+
+        XCTAssertEqual(result.createdGoals.count, 6, "Expected all nodes in the tree to become persistent goals")
+        XCTAssertEqual(result.atomicTaskCount, 4, "Expected four atomic leaves")
+        XCTAssertEqual(result.dependencyCount, 3, "Expected three dependency links across the graph")
+        XCTAssertEqual(Set(result.assignedIdentifiers.values).count, result.assignedIdentifiers.count, "Assigned identifiers should be unique per goal")
+
+        let topLevel = parent.sortedSubgoals
+        XCTAssertEqual(topLevel.map { $0.title }, ["Design phase", "Implementation"], "Top-level ordering should match recommended order")
+
+        guard
+            let designGoal = topLevel.first(where: { $0.title == "Design phase" }),
+            let implementationGoal = topLevel.first(where: { $0.title == "Implementation" })
+        else {
+            return XCTFail("Missing expected top-level goals")
+        }
+
+        XCTAssertTrue(designGoal.hasBeenBrokenDown)
+        XCTAssertTrue(implementationGoal.hasBeenBrokenDown)
+        XCTAssertEqual(implementationGoal.incomingDependencies.count, 1)
+        XCTAssertEqual(implementationGoal.incomingDependencies.first?.prerequisite?.title, "Design phase")
+
+        let implementationChildren = implementationGoal.sortedSubgoals
+        XCTAssertEqual(implementationChildren.count, 2)
+        XCTAssertEqual(implementationChildren.first?.incomingDependencies.first?.prerequisite?.title, "Create wireframes")
+        XCTAssertEqual(implementationChildren.last?.incomingDependencies.first?.prerequisite?.title, "Build core flow")
+    }
+
+    func testAggregatedProgressUsesLeafAverage() throws {
+        let parent = Goal(title: "Aggregate progress", content: "")
+        context.insert(parent)
+
+        let response = GoalBreakdownResponse(
+            subtasks: [
+                GoalBreakdownResponse.Node(
+                    id: "phase-a",
+                    title: "Phase A",
+                    description: "High-level step",
+                    estimatedHours: 2,
+                    dependencies: [],
+                    difficulty: "easy",
+                    children: [
+                        GoalBreakdownResponse.Node(
+                            id: "leaf-1",
+                            title: "Leaf 1",
+                            description: "",
+                            estimatedHours: 1,
+                            dependencies: [],
+                            difficulty: "easy",
+                            children: [],
+                            isAtomic: true
+                        ),
+                        GoalBreakdownResponse.Node(
+                            id: "leaf-2",
+                            title: "Leaf 2",
+                            description: "",
+                            estimatedHours: 1,
+                            dependencies: [],
+                            difficulty: "easy",
+                            children: [],
+                            isAtomic: true
+                        )
+                    ],
+                    isAtomic: false
+                ),
+                GoalBreakdownResponse.Node(
+                    id: "phase-b",
+                    title: "Phase B",
+                    description: "Another high-level step",
+                    estimatedHours: 3,
+                    dependencies: ["phase-a"],
+                    difficulty: "medium",
+                    children: [
+                        GoalBreakdownResponse.Node(
+                            id: "leaf-3",
+                            title: "Leaf 3",
+                            description: "",
+                            estimatedHours: 1,
+                            dependencies: [],
+                            difficulty: "medium",
+                            children: [],
+                            isAtomic: true
+                        )
+                    ],
+                    isAtomic: false
+                )
+            ],
+            recommendedOrder: ["phase-a", "phase-b"],
+            totalEstimatedHours: 5
+        )
+
+        _ = GoalBreakdownBuilder.apply(response: response, to: parent, in: context)
+
+        let leaves = parent.leafDescendants()
+        XCTAssertEqual(leaves.count, 3)
+
+        leaves.first(where: { $0.title == "Leaf 1" })?.progress = 1.0
+        leaves.first(where: { $0.title == "Leaf 2" })?.progress = 0.5
+        leaves.first(where: { $0.title == "Leaf 3" })?.progress = 0.0
+
+        XCTAssertEqual(parent.aggregatedProgress(), 0.5, accuracy: 0.001, "Average progress should reflect leaf progress only")
+    }
+
+    func testTimeToCompletionHandlesNoProgressAndCompletion() {
+        let idleGoal = Goal(title: "Idle")
+        idleGoal.progress = 0.0
+        XCTAssertEqual(idleGoal.timeToCompletion, "No progress yet")
+
+        let doneGoal = Goal(title: "Done")
+        doneGoal.progress = 1.0
+        XCTAssertEqual(doneGoal.timeToCompletion, "Completed")
+    }
+
 }
+
+#endif

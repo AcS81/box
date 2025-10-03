@@ -9,7 +9,6 @@ import SwiftUI
 import SwiftData
 
 struct EmptyStateView: View {
-    @StateObject private var voiceService = VoiceService()
     @State private var animateSparkles = false
 
     var body: some View {
@@ -103,38 +102,55 @@ struct ExampleGoalButton: View {
     let text: String
     @Environment(\.modelContext) private var modelContext
     @StateObject private var userContextService = UserContextService.shared
+    @State private var status: AsyncActionStatus = .idle
 
     private var aiService: AIService { AIService.shared }
 
     var body: some View {
-        Button(action: {
-            createExampleGoal()
-        }) {
-            HStack {
-                Text(text)
-                    .font(.caption)
-                    .foregroundStyle(.primary)
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: {
+                createExampleGoal()
+            }) {
+                HStack {
+                    Text(text)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
 
-                Spacer()
+                    Spacer()
 
-                Image(systemName: "plus.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
+                    if status.isRunning {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.panelBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(.secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .buttonStyle(.plain)
+            .disabled(status.isRunning)
+
+            if status != .idle {
+                AsyncActionFeedbackView(status: status)
+                    .padding(.leading, 4)
+            }
         }
-        .buttonStyle(.plain)
     }
 
     private func createExampleGoal() {
         let goalText = text.replacingOccurrences(of: "\"", with: "")
 
+        guard !status.isRunning else { return }
+        status = .running
+
         Task {
             do {
-                let context = userContextService.buildContext(from: [])
+                let context = await userContextService.buildContext(from: [])
                 let response = try await aiService.createGoal(from: goalText, context: context)
 
                 await MainActor.run {
@@ -147,10 +163,13 @@ struct ExampleGoalButton: View {
                     )
 
                     modelContext.insert(newGoal)
+                    GoalCreationMapper.apply(response, to: newGoal, modelContext: modelContext)
 
                     // Haptic feedback
                     let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
                     impactFeedback.impactOccurred()
+
+                    setStatus(.success(message: "Goal added"))
                 }
             } catch {
                 print("❌ Failed to create example goal: \(error)")
@@ -159,8 +178,30 @@ struct ExampleGoalButton: View {
                 await MainActor.run {
                     let newGoal = Goal(title: goalText)
                     modelContext.insert(newGoal)
+                    setStatus(.failure(message: "AI offline, added basic goal"))
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func setStatus(_ newStatus: AsyncActionStatus, resetAfter seconds: Double = 2.0) {
+        status = newStatus
+
+        guard seconds > 0 else { return }
+
+        switch newStatus {
+        case .success, .failure:
+            Task { [newStatus] in
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                await MainActor.run {
+                    if status == newStatus {
+                        status = .idle
+                    }
+                }
+            }
+        case .idle, .running:
+            break
         }
     }
 }
