@@ -4,6 +4,7 @@ import SwiftData
 struct EmbeddedGeneralChatView: View {
     let goals: [Goal]
     @ObservedObject var lifecycleService: GoalLifecycleService
+    @Binding var focusTrigger: Bool
     @Query(
         sort: [SortDescriptor(\ChatEntry.timestamp, order: .reverse)]
     ) private var chatEntries: [ChatEntry]
@@ -11,9 +12,12 @@ struct EmbeddedGeneralChatView: View {
 
     @State private var messageText = ""
     @State private var isProcessing = false
+    @State private var isRecording = false
     @FocusState private var isComposerFocused: Bool
 
     @ObservedObject private var userContextService = UserContextService.shared
+    @StateObject private var voiceService = VoiceService()
+    @EnvironmentObject private var transcriptManager: VoiceTranscriptManager
 
     private var aiService: AIService { AIService.shared }
 
@@ -30,10 +34,11 @@ struct EmbeddedGeneralChatView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Assistant")
-                        .font(.title2).fontWeight(.bold)
+                        .font(.handDrawn(size: 26, weight: .bold))
+                        .foregroundStyle(Color.paperSpeck)
                     Text("Ask about all goals, bulk-manage, or get insights")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.paperLine.opacity(0.85))
                 }
                 Spacer()
                 if isProcessing { ProgressView().controlSize(.small) }
@@ -78,12 +83,27 @@ struct EmbeddedGeneralChatView: View {
             }
 
             HStack(spacing: 12) {
+                Button {
+                    Task {
+                        if isRecording {
+                            await stopRecording()
+                        } else {
+                            await startRecording()
+                        }
+                    }
+                } label: {
+                    Image(systemName: isRecording ? "stop.circle.fill" : "mic.circle")
+                        .font(.system(size: 28))
+                        .foregroundStyle(isRecording ? .red : .blue)
+                }
+                .disabled(isProcessing)
+
                 TextField("Ask or command across all goals…", text: $messageText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...4)
                     .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color.panelBackground)
+                    .padding(.vertical, 12)
+                    .background(Color.white.opacity(0.92))
                     .clipShape(RoundedRectangle(cornerRadius: 18))
                     .focused($isComposerFocused)
                     .submitLabel(.send)
@@ -99,9 +119,27 @@ struct EmbeddedGeneralChatView: View {
                 }
                 .disabled(messageText.trimmed.isEmpty || isProcessing)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.paperDeep.opacity(0.25))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(Color.paperSpeck.opacity(0.55), lineWidth: 1.2)
+                    )
+            )
+            .shadow(color: Color.black.opacity(0.08), radius: 6, x: 0, y: 3)
         }
         .padding(24)
-        .glassBackground(cornerRadius: 28)
+        .paperCard(cornerRadius: 28)
+        .onChange(of: focusTrigger) { _, newValue in
+            guard newValue else { return }
+            DispatchQueue.main.async {
+                isComposerFocused = true
+                focusTrigger = false
+            }
+        }
     }
 
     @MainActor
@@ -158,6 +196,35 @@ struct EmbeddedGeneralChatView: View {
         }
     }
 
+    @MainActor
+    private func startRecording() async {
+        guard !isProcessing else { return }
+        await voiceService.startRecording()
+        isRecording = true
+    }
+
+    @MainActor
+    private func stopRecording() async {
+        guard isRecording else { return }
+        isRecording = false
+
+        await voiceService.stopRecordingGeneral()
+
+        if case .error(let message) = voiceService.state {
+            print("❌ Voice error: \(message)")
+            voiceService.resetTranscript()
+            return
+        }
+
+        let transcript = voiceService.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { return }
+
+        transcriptManager.presentTranscript(goalTitle: "Assistant", text: transcript)
+        messageText = transcript
+        submit()
+        voiceService.resetTranscript()
+    }
 }
+
 
 

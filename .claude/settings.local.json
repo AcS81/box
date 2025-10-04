@@ -6,7 +6,8 @@
       "WebFetch(domain:github.com)",
       "Bash(plutil:*)",
       "Bash(xargs cat:*)",
-      "Bash(xcrun simctl list:*)"
+      "Bash(xcrun simctl list:*)",
+      "Read(//Users/mac/Desktop/boxes/**)"
     ],
     "deny": [],
     "ask": []

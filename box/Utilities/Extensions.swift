@@ -26,10 +26,29 @@ extension Color {
     static let warningOrange = Color(red: 1.0, green: 0.584, blue: 0.0)
     static let errorRed = Color(red: 1.0, green: 0.231, blue: 0.188)
     static let mirrorBlue = Color.blue.opacity(0.1)
+    static let paperBase = Color(red: 0.967, green: 0.949, blue: 0.823)
+    static let paperSecondary = Color(red: 0.948, green: 0.886, blue: 0.678)
+    static let paperDeep = Color(red: 0.905, green: 0.776, blue: 0.467)
+    static let paperLine = Color(red: 0.643, green: 0.533, blue: 0.341)
+    static let paperMargin = Color(red: 0.882, green: 0.345, blue: 0.192)
+    static let paperSpeck = Color(red: 0.483, green: 0.384, blue: 0.233)
 }
 
 extension ShapeStyle where Self == Color {
     static var accentBlue: Color { Color(red: 0.0, green: 0.478, blue: 1.0) }
+}
+
+extension Font {
+    static func handDrawn(size: CGFloat, weight: Weight = .regular) -> Font {
+        let fontName: String
+        switch weight {
+        case .bold, .semibold, .heavy:
+            fontName = "Noteworthy-Bold"
+        default:
+            fontName = "Noteworthy-Light"
+        }
+        return .custom(fontName, size: size)
+    }
 }
 
 // MARK: - View Extensions
@@ -45,6 +64,19 @@ extension View {
             .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 5)
     }
     
+    func liquidBar(cornerRadius: CGFloat = 20, tint: Color = Color.white.opacity(0.25)) -> some View {
+        self
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .stroke(tint.opacity(0.45), lineWidth: 1.4)
+                    )
+            )
+            .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 6)
+    }
+
     func liquidGlassCard(cornerRadius: CGFloat = 24, tint: Color = Color.blue.opacity(0.12)) -> some View {
         self
             .padding(1)
@@ -84,6 +116,38 @@ extension View {
             )
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .shadow(color: Color.black.opacity(0.25), radius: 24, x: 0, y: 16)
+    }
+
+    func paperCard(
+        cornerRadius: CGFloat = 24,
+        accent: Color? = nil,
+        shadowColor: Color = Color.black.opacity(0.08)
+    ) -> some View {
+        let strokeColor = accent?.opacity(0.52) ?? Color.paperSpeck.opacity(0.45)
+        let highlight = accent?.opacity(0.22) ?? Color.paperLine.opacity(0.26)
+
+        return self
+            .padding(1)
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.paperBase, Color.paperSecondary, Color.paperDeep],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .stroke(strokeColor, lineWidth: 1.3)
+                    )
+                    .shadow(color: shadowColor, radius: 12, x: 0, y: 8)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(highlight, style: StrokeStyle(lineWidth: 1, dash: [4, 4], dashPhase: 2))
+                    .opacity(0.65)
+            )
     }
 
     func cardStyle() -> some View {

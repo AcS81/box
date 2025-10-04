@@ -53,7 +53,7 @@ class AIActionExecutor {
         case .chat:
             return ActionResult(success: true, message: "Continuing conversation")
 
-        default:
+        case _:
             break
         }
 
@@ -136,7 +136,7 @@ class AIActionExecutor {
         case .summarize:
             return try await summarizeGoal(goal, goals: goals)
 
-        case .bulk_delete, .bulk_archive, .bulk_complete, .merge_goals, .reorder_goals, .chat:
+        case .create_goal, .bulk_delete, .bulk_archive, .bulk_complete, .merge_goals, .reorder_goals, .chat:
             preconditionFailure("Bulk or general actions should be handled before resolving a goal")
 
         @unknown default:
@@ -311,9 +311,21 @@ class AIActionExecutor {
         // Insert into context
         modelContext.insert(goal)
 
+        // Generate first sequential step for timeline-based completion
+        do {
+            try await GoalCreationMapper.generateFirstStep(
+                for: goal,
+                context: context,
+                modelContext: modelContext
+            )
+        } catch {
+            print("⚠️ Failed to generate first step: \(error.localizedDescription)")
+            // Continue anyway - user can still use the goal without steps
+        }
+
         return ActionResult(
             success: true,
-            message: "Created goal '\(goal.title)'",
+            message: "Created goal '\(goal.title)' with first step ready",
             data: ["goalId": goal.id.uuidString]
         )
     }

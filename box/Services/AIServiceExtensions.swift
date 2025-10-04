@@ -151,6 +151,241 @@ extension AIService {
         return try await processRequest(function, responseType: GoalBreakdownResponse.self)
     }
 
+    // MARK: - Unified Sequential Step Generation
+
+    /// Generate initial roadmap (3-7 steps) for a new goal
+    func generateInitialRoadmap(for goal: Goal, context: AIContext) async throws -> InitialRoadmapResponse {
+        let prompt = buildInitialRoadmapPrompt(for: goal, context: context)
+        let response = try await makeRoadmapRequest(prompt: prompt)
+        return try parseInitialRoadmapResponse(response)
+    }
+
+    func generateNextSequentialStep(for goal: Goal, completedStep: Goal, context: AIContext) async throws -> NextSequentialStepResponse {
+        let prompt = buildNextSequentialStepPrompt(for: goal, completedStep: completedStep, context: context)
+        let response = try await makeRoadmapRequest(prompt: prompt)
+        return try parseNextSequentialStepResponse(response)
+    }
+
+    private func buildNextSequentialStepPrompt(for goal: Goal, completedStep: Goal, context: AIContext) -> String {
+        let contextSection = buildContextSection(context)
+        let allSteps = goal.sequentialSteps
+        let completedSteps = goal.completedSequentialSteps
+
+        // All previous step titles to prevent duplicates
+        let allStepTitles = allSteps.map { "- \"\($0.title)\"" }.joined(separator: "\n")
+
+        let historySection = completedSteps.map { step in
+            """
+            - Step \(step.orderIndexInParent + 1): "\(step.title)"
+              Outcome: \(step.outcome)
+              Progress: \(Int(step.progress * 100))%
+            """
+        }.joined(separator: "\n")
+
+        let stepCountWarning = allSteps.count >= 10
+            ? "\n⚠️ WARNING: This goal already has \(allSteps.count) steps. This is above the recommended maximum of 10. Consider if the goal is becoming too complex and if completion is truly necessary.\n"
+            : ""
+
+        return """
+        \(contextSection)
+
+        NEXT SEQUENTIAL STEP GENERATION
+
+        Generate the NEXT logical step for this goal:
+
+        Goal Title: "\(goal.title)"
+        Description: \(goal.content)
+        Current Progress: \(completedSteps.count)/\(allSteps.count) steps completed\(stepCountWarning)
+
+        ALL EXISTING STEP TITLES (DO NOT DUPLICATE ANY OF THESE):
+        \(allStepTitles)
+
+        COMPLETED STEPS:
+        \(historySection.isEmpty ? "None yet" : historySection)
+
+        JUST COMPLETED:
+        - Title: "\(completedStep.title)"
+        - Outcome: \(completedStep.outcome)
+        - Progress: \(Int(completedStep.progress * 100))%
+
+        INSTRUCTIONS:
+
+        1. Review ALL existing step titles above and ensure your new step title is UNIQUE
+        2. DO NOT repeat, rephrase, or create variations of existing step titles
+        3. If you find yourself wanting to repeat a step (like "Evaluate", "Review", "Assess"), the goal may be complete instead
+        4. Consider what was just completed and the overall goal
+        5. Generate the NEXT logical step in the sequence (must be different from all previous)
+        6. Make the step achievable and concrete
+        7. Focus on one clear outcome
+        8. Suggest a realistic timeframe (days from now)
+        9. CRITICAL DECISION: Determine if the goal will be COMPLETE after this next step
+           - If this is the FINAL step needed to achieve the goal, set isGoalComplete: true
+           - If more steps will be needed after this one, set isGoalComplete: false
+           - If the goal already has 10+ steps, strongly consider marking it complete
+           - Provide your confidence level (0.0 to 1.0) in this assessment
+
+        DUPLICATE PREVENTION RULES:
+        - Never use the same title as an existing step
+        - Avoid generic repeated actions like "Review again", "Evaluate once more", "Final check"
+        - If you're tempted to add a duplicate-sounding step, set isGoalComplete: true instead
+        - Each step should represent meaningful NEW progress toward the goal
+
+        Return as JSON:
+        {
+            "title": "Build core prototype",
+            "outcome": "Working demo of main features ready for testing",
+            "daysFromNow": 14,
+            "reasoning": "Why this step comes next and how it differs from all previous steps",
+            "isGoalComplete": false,
+            "confidenceLevel": 0.85
+        }
+
+        CRITICAL: Return ONLY the JSON object. No additional text.
+        """
+    }
+
+    private func parseNextSequentialStepResponse(_ responseText: String) throws -> NextSequentialStepResponse {
+        let cleaned = cleanJSONResponse(responseText)
+        guard let data = cleaned.data(using: .utf8) else {
+            throw AIError.invalidResponse
+        }
+
+        do {
+            let response = try JSONDecoder().decode(NextSequentialStepResponse.self, from: data)
+            return response
+        } catch {
+            throw AIError.invalidResponse
+        }
+    }
+
+    private func makeRoadmapRequest(prompt: String) async throws -> String {
+        let apiKey = currentAPIKey
+        guard !apiKey.isEmpty else { throw AIError.noAPIKey }
+
+        var request = URLRequest(url: URL(string: baseURL)!, timeoutInterval: requestTimeout)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "model": "gpt-4",
+            "messages": [
+                ["role": "system", "content": roadmapSystemPrompt],
+                ["role": "user", "content": prompt]
+            ],
+            "temperature": 0.5,
+            "max_tokens": 2000
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw AIError.networkError
+        }
+
+        let apiResponse = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        guard let content = apiResponse.choices.first?.message.content, !content.isEmpty else {
+            throw AIError.invalidResponse
+        }
+
+        return content
+    }
+
+    private var roadmapSystemPrompt: String {
+        """
+        You are an expert project planner helping users break down goals into achievable milestones.
+
+        Your role:
+        - Create realistic, sequential roadmaps
+        - Balance ambition with achievability
+        - Provide clear, actionable milestones
+        - Distribute timeline appropriately based on goal complexity
+
+        Return valid JSON only, no additional text.
+        """
+    }
+
+    // MARK: - Initial Roadmap Generation
+
+    private func buildInitialRoadmapPrompt(for goal: Goal, context: AIContext) -> String {
+        let contextSection = buildContextSection(context)
+
+        return """
+        \(contextSection)
+
+        INITIAL ROADMAP GENERATION
+
+        Create a complete roadmap for achieving this goal:
+
+        Goal Title: "\(goal.title)"
+        Description: \(goal.content.isEmpty ? "No additional description" : goal.content)
+        Priority: \(goal.priority.rawValue)
+        Category: \(goal.category)
+        \(goal.targetDate != nil ? "Target Date: \(goal.targetDate!.formatted(date: .abbreviated, time: .omitted))" : "No specific deadline")
+
+        INSTRUCTIONS:
+
+        1. Break down the goal into 3-7 sequential steps
+        2. Each step should be a meaningful milestone
+        3. Steps build on each other logically
+        4. Make steps concrete and achievable
+        5. Distribute timeline realistically based on priority:
+           - Now priority: aggressive timeline (days to weeks)
+           - Next priority: moderate timeline (weeks to months)
+           - Later priority: relaxed timeline (months)
+
+        Return as JSON:
+        {
+            "steps": [
+                {
+                    "order": 1,
+                    "title": "Research and define requirements",
+                    "outcome": "Clear understanding of what needs to be done",
+                    "daysFromStart": 7
+                },
+                {
+                    "order": 2,
+                    "title": "Create initial prototype",
+                    "outcome": "Basic working version ready for feedback",
+                    "daysFromStart": 21
+                }
+                // ... 3-7 steps total
+            ],
+            "totalEstimatedDays": 90,
+            "approach": "Brief explanation of the overall strategy"
+        }
+
+        IMPORTANT:
+        - Generate 3-7 steps (not more, not less)
+        - Final step should achieve the stated goal
+        - Be realistic about timeframes
+        - Each step must have clear outcome
+
+        CRITICAL: Return ONLY the JSON object. No additional text.
+        """
+    }
+
+    private func parseInitialRoadmapResponse(_ responseText: String) throws -> InitialRoadmapResponse {
+        let cleaned = cleanJSONResponse(responseText)
+        guard let data = cleaned.data(using: .utf8) else {
+            throw AIError.invalidResponse
+        }
+
+        do {
+            let response = try JSONDecoder().decode(InitialRoadmapResponse.self, from: data)
+            guard response.steps.count >= 3 && response.steps.count <= 7 else {
+                print("⚠️ AI returned \(response.steps.count) steps, expected 3-7")
+                throw AIError.invalidResponse
+            }
+            return response
+        } catch {
+            print("❌ Failed to parse initial roadmap: \(error)")
+            throw AIError.invalidResponse
+        }
+    }
+
     func chatWithGoal(message: String, goal: Goal, context: AIContext) async throws -> String {
         let function = AIFunction.chatWithGoal(message: message, goal: goal, context: context)
         return try await processRequest(function)

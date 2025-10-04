@@ -130,21 +130,9 @@ struct GoalCardView: View {
         }
         .padding(20)
         .animation(.smoothSpring, value: isExpanded)
-        .liquidGlassCard(
+        .paperCard(
             cornerRadius: 28,
-            tint: goal.isActive ? cardTint.opacity(0.42) : cardTint.opacity(0.26)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [priorityAccentColor.opacity(goal.isActive ? 0.45 : 0.18), Color.white.opacity(0.06)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: goal.isActive ? 1.8 : 1.1
-                )
-                .blendMode(.plusLighter)
+            accent: goal.isActive ? priorityAccentColor : Color.paperMargin
         )
         .accessibilityLabel("Goal: \(goal.title)")
         .accessibilityValue("Progress: \(Int(goal.progress * 100)) percent, Priority: \(goal.priority.rawValue)")
@@ -215,6 +203,7 @@ struct GoalCardView: View {
             SubtaskListSheet(
                 parentGoal: goal,
                 subgoals: goal.sortedSubgoals,
+                recordingSubtaskId: recordingSubtaskId,
                 onToggleCompletion: { goal, isComplete in
                     Task { await toggleSubgoalCompletion(goal, target: isComplete ? 1.0 : 0.0) }
                 },
@@ -359,6 +348,14 @@ struct GoalCardView: View {
 
                 metaChip(icon: "folder.fill", label: goal.category, tint: priorityAccentColor)
 
+                // Show sequential steps progress (roadmap system)
+                if goal.hasSequentialSteps {
+                    let completedCount = goal.completedSequentialSteps.count
+                    let totalCount = goal.sequentialSteps.count
+                    let percentage = totalCount > 0 ? Int((Double(completedCount) / Double(totalCount)) * 100) : 0
+                    metaChip(icon: "map.fill", label: "\(completedCount)/\(totalCount) steps (\(percentage)%)", tint: .orange)
+                }
+
                 if let parent = parentGoal {
                     metaChip(icon: "arrowshape.turn.up.backward.fill", label: parent.title, tint: Color.blue)
                 }
@@ -367,7 +364,7 @@ struct GoalCardView: View {
                     metaChip(icon: "lock.fill", label: "Locked", tint: .yellow)
                         .accessibilityHidden(true)
                 }
- 
+
                 if goal.activationState == .active {
                     emojiMetaChip(emoji: goalEmoji, label: "Active", tint: .green)
                 } else if let info = goal.activationState.presentation {
@@ -382,47 +379,79 @@ struct GoalCardView: View {
     private var glanceRow: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Progress")
+                Text(goal.hasSequentialSteps ? "Roadmap Progress" : "Progress")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
-                Text("\(Int(goal.progress * 100))%")
+                Text("\(Int(displayProgress * 100))%")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
             }
 
-            ProgressView(value: goal.progress)
+            ProgressView(value: displayProgress)
                 .progressViewStyle(.linear)
                 .tint(priorityAccentColor)
 
             HStack(spacing: 12) {
-                glanceMetric(
-                    icon: "list.bullet.rectangle",
-                    title: "Subgoals",
-                    value: "\(goal.sortedSubgoals.count)"
-                )
+                if goal.hasSequentialSteps {
+                    glanceMetric(
+                        icon: "map.fill",
+                        title: "Roadmap Steps",
+                        value: "\(goal.sequentialSteps.count)"
+                    )
 
-                glanceMetric(
-                    icon: "checkmark.circle",
-                    title: "Complete",
-                    value: "\(completedSubgoalsCount)"
-                )
+                    glanceMetric(
+                        icon: "checkmark.circle.fill",
+                        title: "Done",
+                        value: "\(goal.completedSequentialSteps.count)"
+                    )
 
-                glanceMetric(
-                    icon: "link",
-                    title: "Dependencies",
-                    value: "\(dependencyCount)"
-                )
+                    if goal.hasParallelBranches {
+                        glanceMetric(
+                            icon: "arrow.triangle.branch",
+                            title: "Subtasks",
+                            value: "\(goal.parallelBranches.count)"
+                        )
+                    }
+                } else {
+                    glanceMetric(
+                        icon: "list.bullet.rectangle",
+                        title: "Subtasks",
+                        value: "\(goal.sortedSubgoals.count)"
+                    )
+
+                    glanceMetric(
+                        icon: "checkmark.circle",
+                        title: "Complete",
+                        value: "\(completedSubgoalsCount)"
+                    )
+
+                    glanceMetric(
+                        icon: "link",
+                        title: "Dependencies",
+                        value: "\(dependencyCount)"
+                    )
+                }
             }
         }
     }
 
+    private var displayProgress: Double {
+        if goal.hasSequentialSteps {
+            return goal.sequentialProgress
+        }
+        return goal.progress
+    }
+
     @ViewBuilder
     private var milestoneRow: some View {
-        if let projection = upcomingProjection {
+        // Show current sequential step if available
+        if let currentStep = goal.currentSequentialStep {
+            currentStepCard(step: currentStep)
+        } else if let projection = upcomingProjection {
             milestoneCard(
                 icon: projection.status == .inProgress ? "timer" : "scope",
                 title: projection.title,
@@ -668,6 +697,91 @@ struct GoalCardView: View {
         return formatter
     }()
 
+    private func currentStepCard(step: Goal) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "play.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Current Step")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+
+                    Text(step.title)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                }
+
+                Spacer()
+
+                if let nextStep = goal.nextSequentialStep {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text("Next")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        Text(nextStep.title)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+            if !step.outcome.isEmpty {
+                Text(step.outcome)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: 12) {
+                if let targetDate = step.targetDate {
+                    Label(targetDate.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    // Navigate to timeline view
+                    // This would need to be wired up via environment or coordinator
+                } label: {
+                    Label("View Roadmap", systemImage: "map")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            // "Until Now" indicator
+            if !goal.completedSequentialSteps.isEmpty {
+                Divider()
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                    Text("Until now: \(goal.completedSequentialSteps.count) completed steps locked")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color.orange.opacity(colorScheme == .dark ? 0.18 : 0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.orange.opacity(colorScheme == .dark ? 0.35 : 0.25), lineWidth: 1.5)
+        )
+    }
+
     private func nextEventStatusLine(_ link: ScheduledEventLink) -> String {
         guard let start = link.startDate else {
             return "Scheduled session"
@@ -869,14 +983,15 @@ struct GoalCardView: View {
     }
 
     @State private var recordingForSubgoal: Goal?
+    @State private var recordingSubtaskId: UUID?
 
     private func recordVoiceForSubtask(_ subgoal: Goal) async {
-        if isRecording && recordingForSubgoal?.id == subgoal.id {
+        if recordingSubtaskId == subgoal.id {
             // Stop recording for this subtask
-            await voiceService.stopRecording(for: goal)
+            await voiceService.stopRecording(for: subgoal)
 
             await MainActor.run {
-                isRecording = false
+                recordingSubtaskId = nil
                 recordingForSubgoal = nil
                 stopTimer()
             }
@@ -892,12 +1007,14 @@ struct GoalCardView: View {
             let trimmed = voiceService.transcript.trimmed
             if !trimmed.isEmpty {
                 await MainActor.run {
-                    // Create transcript with subtask context for parent goal's chat
+                    // Create transcript with subtask context
                     let contextualTranscript = "📎 \(subgoal.title): \(trimmed)"
-                    let scope: ChatEntry.Scope = goal.parent != nil ? .subgoal(goal.id) : .goal(goal.id)
+                    let scope: ChatEntry.Scope = .subgoal(subgoal.id)
                     let entry = ChatEntry(content: contextualTranscript, isUser: true, scope: scope)
                     modelContext.insert(entry)
+                    subgoal.updatedAt = Date()
                     goal.updatedAt = Date()
+                    // Show transcript with subtask context - this creates its own UI
                     transcriptManager.presentTranscript(goalTitle: "\(goal.title) → \(subgoal.title)", text: trimmed)
                 }
             }
@@ -910,6 +1027,7 @@ struct GoalCardView: View {
                 return
             }
 
+            // Cancel any existing recording
             await MainActor.run {
                 voiceService.cancel()
                 recordedTranscript = nil
@@ -920,9 +1038,9 @@ struct GoalCardView: View {
             await voiceService.startRecording()
             await MainActor.run {
                 recordingForSubgoal = subgoal
+                recordingSubtaskId = subgoal.id
                 recordingStartedAt = Date()
                 recordingElapsed = 0
-                isRecording = true
                 startTimer()
             }
         }
@@ -1104,6 +1222,7 @@ struct GoalCardView: View {
 
                 SubtaskChecklistView(
                     subgoals: inlineSubgoals,
+                    recordingSubtaskId: recordingSubtaskId,
                     onToggleCompletion: { subgoal, isComplete in
                         Task { await toggleSubgoalCompletion(subgoal, target: isComplete ? 1.0 : 0.0) }
                     },
@@ -1157,24 +1276,17 @@ struct GoalCardView: View {
         Task {
             await MainActor.run { isLocking = true }
             
-            do {
-                if goal.isLocked {
-                    lifecycleService.unlock(goal: goal, reason: "User unlocked card")
-                } else {
-                    let goalsSnapshot = currentGoals()
-                    try await lifecycleService.lock(goal: goal, within: goalsSnapshot, modelContext: modelContext)
-                }
-                
-                await MainActor.run {
-                    let feedback = UIImpactFeedbackGenerator(style: .light)
-                    feedback.impactOccurred()
-                    isLocking = false
-                }
-            } catch {
-                await MainActor.run {
-                    presentError(error)
-                    isLocking = false
-                }
+            if goal.isLocked {
+                lifecycleService.unlock(goal: goal, reason: "User unlocked card")
+            } else {
+                let goalsSnapshot = currentGoals()
+                await lifecycleService.lock(goal: goal, within: goalsSnapshot, modelContext: modelContext)
+            }
+            
+            await MainActor.run {
+                let feedback = UIImpactFeedbackGenerator(style: .light)
+                feedback.impactOccurred()
+                isLocking = false
             }
         }
     }
@@ -1522,6 +1634,7 @@ private struct MetricChip: View {
 struct SubtaskChecklistView: View {
     let subgoals: [Goal]
     let level: Int
+    let recordingSubtaskId: UUID?
     let onToggleCompletion: (Goal, Bool) -> Void
     let onDelete: (Goal) -> Void
     let onVoiceRecord: ((Goal) -> Void)?
@@ -1530,6 +1643,7 @@ struct SubtaskChecklistView: View {
     init(
         subgoals: [Goal],
         level: Int = 0,
+        recordingSubtaskId: UUID? = nil,
         onToggleCompletion: @escaping (Goal, Bool) -> Void,
         onDelete: @escaping (Goal) -> Void,
         onVoiceRecord: ((Goal) -> Void)? = nil,
@@ -1537,6 +1651,7 @@ struct SubtaskChecklistView: View {
     ) {
         self.subgoals = subgoals
         self.level = level
+        self.recordingSubtaskId = recordingSubtaskId
         self.onToggleCompletion = onToggleCompletion
         self.onDelete = onDelete
         self.onVoiceRecord = onVoiceRecord
@@ -1549,6 +1664,7 @@ struct SubtaskChecklistView: View {
                 SubtaskChecklistRow(
                     subgoal: subgoal,
                     level: level,
+                    recordingSubtaskId: recordingSubtaskId,
                     onToggleCompletion: onToggleCompletion,
                     onDelete: onDelete,
                     onVoiceRecord: onVoiceRecord,
@@ -1562,6 +1678,7 @@ struct SubtaskChecklistView: View {
 private struct SubtaskChecklistRow: View {
     @Bindable var subgoal: Goal
     let level: Int
+    let recordingSubtaskId: UUID?
     let onToggleCompletion: (Goal, Bool) -> Void
     let onDelete: (Goal) -> Void
     let onVoiceRecord: ((Goal) -> Void)?
@@ -1573,6 +1690,7 @@ private struct SubtaskChecklistRow: View {
     init(
         subgoal: Goal,
         level: Int,
+        recordingSubtaskId: UUID? = nil,
         onToggleCompletion: @escaping (Goal, Bool) -> Void,
         onDelete: @escaping (Goal) -> Void,
         onVoiceRecord: ((Goal) -> Void)? = nil,
@@ -1580,6 +1698,7 @@ private struct SubtaskChecklistRow: View {
     ) {
         self._subgoal = Bindable(subgoal)
         self.level = level
+        self.recordingSubtaskId = recordingSubtaskId
         self.onToggleCompletion = onToggleCompletion
         self.onDelete = onDelete
         self.onVoiceRecord = onVoiceRecord
@@ -1635,7 +1754,7 @@ private struct SubtaskChecklistRow: View {
 
                 VStack(alignment: .trailing, spacing: 10) {
                     if let onVoiceRecord {
-                        voiceButton(action: { onVoiceRecord(subgoal) })
+                        voiceButton(isRecording: recordingSubtaskId == subgoal.id, action: { onVoiceRecord(subgoal) })
                     }
 
                     lockButton
@@ -1652,6 +1771,7 @@ private struct SubtaskChecklistRow: View {
                 SubtaskChecklistView(
                     subgoals: childSubgoals,
                     level: level + 1,
+                    recordingSubtaskId: recordingSubtaskId,
                     onToggleCompletion: onToggleCompletion,
                     onDelete: onDelete,
                     onVoiceRecord: onVoiceRecord,
@@ -1827,18 +1947,18 @@ private struct SubtaskChecklistRow: View {
         .buttonStyle(.plain)
     }
 
-    private func voiceButton(action: @escaping () -> Void) -> some View {
+    private func voiceButton(isRecording: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: "mic.fill")
+            Image(systemName: isRecording ? "stop.circle.fill" : "mic.fill")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(accentTint)
+                .foregroundStyle(isRecording ? .red : accentTint)
                 .padding(7)
                 .background(
-                    Circle().fill(accentTint.opacity(0.12))
+                    Circle().fill(isRecording ? Color.red.opacity(0.12) : accentTint.opacity(0.12))
                 )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Record voice note")
+        .accessibilityLabel(isRecording ? "Stop recording" : "Record voice note")
     }
 
     private var expandButton: some View {
@@ -1894,6 +2014,7 @@ private struct SubtaskChecklistRow: View {
 private struct SubtaskListSheet: View {
     let parentGoal: Goal
     let subgoals: [Goal]
+    let recordingSubtaskId: UUID?
     let onToggleCompletion: (Goal, Bool) -> Void
     let onDelete: (Goal) -> Void
     let onVoiceRecord: ((Goal) -> Void)?
@@ -1913,6 +2034,7 @@ private struct SubtaskListSheet: View {
                     } else {
                         SubtaskChecklistView(
                             subgoals: subgoals,
+                            recordingSubtaskId: recordingSubtaskId,
                             onToggleCompletion: onToggleCompletion,
                             onDelete: onDelete,
                             onVoiceRecord: onVoiceRecord,

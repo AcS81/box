@@ -38,6 +38,7 @@ class Goal {
     var targetDate: Date?
     var lastRegeneratedAt: Date?
     var activatedAt: Date?
+    var completedAt: Date?  // When this step was actually completed (for timeline accuracy)
     var sortOrder: Double?
 
     var aiGlyph: String?
@@ -48,6 +49,42 @@ class Goal {
 
     // Track if goal has been broken down to prevent duplicate breakdown attempts
     var hasBeenBrokenDown: Bool = false
+
+    // Unified sequential step system (replaces GoalStop)
+    var isSequentialStep: Bool = false  // true = this is a step in a sequence
+    var orderIndexInParent: Int = 0     // position in sequence (0, 1, 2...)
+    var outcome: String = ""            // what gets achieved at this step
+
+    enum StepStatus: String, Codable, CaseIterable {
+        case pending     // Future step not yet accessible
+        case current     // Active step user is working on
+        case completed   // Done - "until now"
+        case unknown     // Not yet generated
+
+        var icon: String {
+            switch self {
+            case .pending: return "lock.fill"
+            case .current: return "play.circle.fill"
+            case .completed: return "checkmark.circle.fill"
+            case .unknown: return "questionmark.circle"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .pending: return .gray
+            case .current: return .orange
+            case .completed: return .green
+            case .unknown: return .purple
+            }
+        }
+    }
+
+    private var stepStatusStorage: String = StepStatus.unknown.rawValue
+    var stepStatus: StepStatus {
+        get { StepStatus(rawValue: stepStatusStorage) ?? .unknown }
+        set { stepStatusStorage = newValue.rawValue }
+    }
 
     @Relationship(deleteRule: .cascade) var subgoals: [Goal]?
     @Relationship(inverse: \Goal.subgoals) var parent: Goal?
@@ -100,6 +137,131 @@ class Goal {
     var hasSubtasks: Bool {
         guard let subgoals else { return false }
         return !subgoals.isEmpty
+    }
+
+    // MARK: - Unified Sequential/Parallel Subgoals
+
+    /// All sequential steps (stops) sorted by order
+    var sequentialSteps: [Goal] {
+        guard let subgoals else { return [] }
+        return subgoals
+            .filter { $0.isSequentialStep }
+            .sorted { $0.orderIndexInParent < $1.orderIndexInParent }
+    }
+
+    /// All parallel branches (traditional subgoals)
+    var parallelBranches: [Goal] {
+        guard let subgoals else { return [] }
+        return subgoals.filter { !$0.isSequentialStep }
+    }
+
+    /// Current active sequential step
+    var currentSequentialStep: Goal? {
+        sequentialSteps.first { $0.stepStatus == .current }
+    }
+
+    /// Next pending step in sequence
+    var nextSequentialStep: Goal? {
+        guard let current = currentSequentialStep else {
+            return sequentialSteps.first { $0.stepStatus == .pending }
+        }
+        let nextIndex = current.orderIndexInParent + 1
+        return sequentialSteps.first { $0.orderIndexInParent == nextIndex }
+    }
+
+    /// Completed sequential steps ("until now")
+    var completedSequentialSteps: [Goal] {
+        sequentialSteps.filter { $0.stepStatus == .completed }
+    }
+
+    /// Progress based on sequential steps
+    var sequentialProgress: Double {
+        let steps = sequentialSteps
+        guard !steps.isEmpty else { return 0 }
+        let completed = steps.filter { $0.stepStatus == .completed }.count
+        return Double(completed) / Double(steps.count)
+    }
+
+    /// Whether this goal has sequential steps
+    var hasSequentialSteps: Bool {
+        !sequentialSteps.isEmpty
+    }
+
+    /// Whether this goal has parallel branches
+    var hasParallelBranches: Bool {
+        !parallelBranches.isEmpty
+    }
+
+    /// Complete current sequential step and activate next
+    func advanceSequentialStep() {
+        guard let current = currentSequentialStep else { return }
+
+        // Mark current step as 100% complete
+        current.progress = 1.0
+        current.completedAt = Date()  // Track actual completion time
+
+        // Lock current (becomes "until now")
+        current.stepStatus = .completed
+        current.lock(with: current.captureSnapshot())
+
+        // Activate next if exists
+        if let next = nextSequentialStep {
+            next.stepStatus = .current
+            next.progress = 0.0 // Reset next step progress
+        }
+
+        // Sync parent progress with sequential steps
+        syncProgressWithSequentialSteps()
+        updatedAt = Date()
+    }
+
+    /// Synchronize parent goal progress with sequential step completion
+    func syncProgressWithSequentialSteps() {
+        guard hasSequentialSteps else { return }
+        progress = sequentialProgress
+    }
+
+    /// Mark sequential step complete and advance
+    func completeSequentialStep(_ step: Goal) {
+        guard sequentialSteps.contains(where: { $0.id == step.id }),
+              step.stepStatus == .current else { return }
+
+        step.progress = 1.0
+        step.completedAt = Date()  // Track actual completion time
+        step.stepStatus = .completed
+        step.lock(with: step.captureSnapshot())
+
+        // Activate next if exists
+        let nextIndex = step.orderIndexInParent + 1
+        if let next = sequentialSteps.first(where: { $0.orderIndexInParent == nextIndex }) {
+            next.stepStatus = .current
+            next.progress = 0.0
+        }
+
+        syncProgressWithSequentialSteps()
+        updatedAt = Date()
+    }
+
+    /// Create a new sequential step as a child
+    func createSequentialStep(title: String, outcome: String, targetDate: Date? = nil) -> Goal {
+        let step = Goal(
+            title: title,
+            content: outcome,
+            category: category,
+            priority: priority
+        )
+        step.isSequentialStep = true
+        step.orderIndexInParent = sequentialSteps.count
+        step.outcome = outcome
+        step.targetDate = targetDate
+        step.stepStatus = sequentialSteps.isEmpty ? .current : .pending
+
+        if subgoals == nil {
+            subgoals = []
+        }
+        subgoals?.append(step)
+
+        return step
     }
 
     var isLeaf: Bool {
@@ -345,6 +507,11 @@ class Goal {
 
     var effectiveSortOrder: Double {
         sortOrder ?? createdAt.timeIntervalSinceReferenceDate
+    }
+
+    var normalizedCategory: String {
+        let trimmed = category.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Unsorted" : trimmed
     }
 
     var kind: Kind {

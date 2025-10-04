@@ -93,7 +93,9 @@ final class VoiceTranscriptManager: ObservableObject {
         fadeTasks[id] = Task { [weak self] in
             guard let self else { return }
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            await self.transitionToFade(id)
+            await MainActor.run {
+                self.transitionToFade(id)
+            }
         }
     }
 
@@ -113,14 +115,16 @@ final class VoiceTranscriptManager: ObservableObject {
         removalTasks[id] = Task { [weak self] in
             guard let self else { return }
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            await self.remove(id)
+            await MainActor.run {
+                self.remove(id)
+            }
         }
     }
 
     private func remove(_ id: UUID) {
         cancelTimers(for: id)
         if let index = entries.firstIndex(where: { $0.id == id }) {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            _ = withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                 entries.remove(at: index)
             }
         }

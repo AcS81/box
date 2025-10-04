@@ -1418,3 +1418,64 @@ struct GoalEmojiResponse: Codable {
     let emoji: String
     let reason: String?
 }
+
+struct RoadmapResponse: Codable {
+    let stops: [StopData]
+    let totalDuration: String
+    let approach: String
+
+    struct StopData: Codable {
+        let order: Int
+        let title: String
+        let outcome: String
+        let daysFromStart: Int
+    }
+}
+
+struct FirstStopResponse: Codable {
+    let stop: StopData
+    let estimatedTotalStops: Int
+    let rationale: String
+
+    struct StopData: Codable {
+        let title: String
+        let outcome: String
+        let daysFromStart: Int
+        let percentageOfGoal: Double
+    }
+}
+
+struct NextStopResponse: Codable {
+    let stop: StopData
+    let adjustedTotalStops: Int?
+    let reasoning: String
+
+    struct StopData: Codable {
+        let title: String
+        let outcome: String
+        let daysFromStart: Int
+        let percentageOfGoal: Double
+    }
+}
+
+struct NextSequentialStepResponse: Codable {
+    let title: String
+    let outcome: String
+    let daysFromNow: Int?
+    let reasoning: String?
+    let isGoalComplete: Bool?  // AI decides if goal is finished after this step
+    let confidenceLevel: Double?  // AI's confidence in completion assessment (0-1)
+}
+
+struct InitialRoadmapResponse: Codable {
+    let steps: [RoadmapStep]
+    let totalEstimatedDays: Int?
+    let approach: String?
+}
+
+struct RoadmapStep: Codable {
+    let order: Int
+    let title: String
+    let outcome: String
+    let daysFromStart: Int
+}

@@ -21,18 +21,35 @@ struct ContentView: View {
     @State private var searchText = ""
     @State private var selectedCategory: String?
     @State private var activeSheet: ActiveSheet?
-    @State private var selectedTab: MainTab = .command
+    @State private var selectedTab: MainTab = .chat
     @State private var goalsLayout: GoalsLayout = .gantt
     @State private var statusFocus: StatusFocus = .active
     @State private var isRefreshing = false
+    @State private var chatFocusTrigger = false
+    @State private var splashPhase: SplashPhase = .idle
+    @State private var isAppReady = false
 
     var body: some View {
-        Group {
-            if hasCompletedOnboarding {
-                mainInterface
-                    .voiceTranscriptOverlay(manager: transcriptManager)
-            } else {
-                onboarding
+        ZStack {
+            Group {
+                if hasCompletedOnboarding && isAppReady {
+                    mainInterface
+                        .voiceTranscriptOverlay(manager: transcriptManager)
+                } else if hasCompletedOnboarding {
+                    mainInterface.hidden()
+                } else {
+                    onboarding
+                }
+            }
+
+            if hasCompletedOnboarding, !isAppReady {
+                SplashScreen(
+                    phase: $splashPhase,
+                    onReadyToUnlock: {
+                        Task { await playUnlockAnimationAndEnter() }
+                    }
+                )
+                .transition(.opacity.combined(with: .scale))
             }
         }
         .environmentObject(lifecycleService)
@@ -44,6 +61,17 @@ struct ContentView: View {
                 SettingsView()
             }
         }
+        .task(id: hasCompletedOnboarding) {
+            guard hasCompletedOnboarding else { return }
+            await startSplashLoop()
+        }
+        .task(id: splashPhase) {
+            guard hasCompletedOnboarding, splashPhase == .looping else { return }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await MainActor.run {
+                splashPhase = .unlocking
+            }
+        }
     }
 }
 
@@ -51,57 +79,73 @@ private extension ContentView {
     var mainInterface: some View {
         TabView(selection: $selectedTab) {
             NavigationStack {
-                commandCenterView
-                    .navigationTitle("Command Center")
+                chatTabView
+                    .navigationTitle("Chat")
                     .toolbar { commandToolbar }
             }
             .tabItem {
-                Label("Command", systemImage: "bubble.left.and.text.bubble.fill")
+                Label("Chat", systemImage: "bubble.left.and.text.bubble.fill")
             }
-            .tag(MainTab.command)
+            .tag(MainTab.chat)
 
             NavigationStack {
-                goalsWorkspaceView
-                    .navigationTitle("Goals")
+                timelineTabView
+                    .navigationTitle("Timeline")
+                    .toolbar { commandToolbar }
+            }
+            .tabItem {
+                Label("Timeline", systemImage: "calendar.badge.clock")
+            }
+            .tag(MainTab.timeline)
+
+            NavigationStack {
+                categoriesTabView
+                    .navigationTitle("Categories")
                     .toolbar { goalToolbar }
                     .searchable(text: $searchText, prompt: "Search goals")
             }
             .tabItem {
-                Label("Goals", systemImage: "square.grid.3x3")
+                Label("Categories", systemImage: "folder.fill")
             }
-            .tag(MainTab.goals)
-
-            NavigationStack {
-                mirrorModeView
-                    .navigationTitle("AI Insights")
-                    .toolbar { commandToolbar }
-            }
-            .tabItem {
-                Label("AI Insights", systemImage: "sparkles.rectangle.stack")
-            }
-            .tag(MainTab.mirror)
+            .tag(MainTab.categories)
         }
     }
 
-    var commandCenterView: some View {
+    func startSplashLoop() async {
+        guard splashPhase == .idle else { return }
+        await MainActor.run {
+            splashPhase = .looping
+        }
+    }
+
+    func playUnlockAnimationAndEnter() async {
+        guard !isAppReady else { return }
+        await MainActor.run {
+            splashPhase = .unlocking
+        }
+
+        try? await Task.sleep(nanoseconds: 1_200_000_000) // Allow gate animation to play
+
+        await MainActor.run {
+            isAppReady = true
+            splashPhase = .completed
+            chatFocusTrigger = true
+        }
+    }
+
+    var chatTabView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 32) {
-                EmbeddedGeneralChatView(goals: goals, lifecycleService: lifecycleService)
-
-                if !topLevelGoals.isEmpty {
-                    statusOverviewSection
-                    statusFocusSection
-                    timelineHighlightsSection
-                }
-
-                if !proactiveService.insights.isEmpty {
-                    proactiveInsightsSection
-                }
+                EmbeddedGeneralChatView(
+                    goals: goals,
+                    lifecycleService: lifecycleService,
+                    focusTrigger: $chatFocusTrigger
+                )
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 36)
         }
-        .background(sceneBackground)
+        .linedPaperBackground(spacing: 44, marginX: 64)
         .task {
             await generateDailyInsights()
             autopilotService.startMonitoring()
@@ -122,6 +166,24 @@ private extension ContentView {
         }
     }
 
+    var timelineTabView: some View {
+        StopsTimelineView(goals: Array(goals))
+    }
+
+    var categoriesTabView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                GoalCategoryGridView(
+                    goals: filteredGoals,
+                    selectedCategory: $selectedCategory
+                )
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 36)
+        }
+        .linedPaperBackground(spacing: 44, marginX: 64)
+    }
+
     var goalsWorkspaceView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
@@ -134,7 +196,7 @@ private extension ContentView {
                             EmptyStateView()
                                 .padding(.top, 20)
                         } else {
-                            GanttTimelineView(goals: filteredGoals)
+                            GoalsTimelineView(goals: filteredGoals)
                         }
                     case .categories:
                         GoalCategoryGridView(
@@ -658,9 +720,9 @@ private extension ContentView {
 
 private extension ContentView {
     enum MainTab: Hashable {
-        case command
-        case goals
-        case mirror
+        case chat
+        case timeline
+        case categories
     }
 
     enum ActiveSheet: String, Identifiable {

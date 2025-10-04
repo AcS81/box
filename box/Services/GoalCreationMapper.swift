@@ -84,6 +84,36 @@ enum GoalCreationMapper {
         goal.updatedAt = referenceDate
     }
 
+    /// Generate the first sequential step for a newly created goal
+    static func generateFirstStep(
+        for goal: Goal,
+        context: AIContext,
+        modelContext: ModelContext
+    ) async throws {
+        guard !goal.hasSequentialSteps else { return }
+
+        let nextStepResponse = try await AIService.shared.generateNextSequentialStep(
+            for: goal,
+            completedStep: goal, // Use goal itself as placeholder for first step
+            context: context
+        )
+
+        // Create the first sequential step
+        let firstStep = goal.createSequentialStep(
+            title: nextStepResponse.title,
+            outcome: nextStepResponse.outcome,
+            targetDate: Calendar.current.date(
+                byAdding: .day,
+                value: nextStepResponse.daysFromNow ?? 7,
+                to: goal.createdAt
+            ) ?? Date().addingTimeInterval(TimeInterval((nextStepResponse.daysFromNow ?? 7) * 86400))
+        )
+        firstStep.stepStatus = .current
+        goal.updatedAt = Date()
+
+        try modelContext.save()
+    }
+
     private static func clampConfidence(_ value: Double?) -> Double {
         guard let value else { return 0.75 }
         return min(max(value, 0.05), 0.99)

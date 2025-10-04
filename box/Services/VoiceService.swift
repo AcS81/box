@@ -31,7 +31,7 @@ final class VoiceService: ObservableObject {
     private var converter: AVAudioConverter?
     private var totalFramesWritten: AVAudioFramePosition = 0
     private var outputSampleRate: Double = 16000
-    private let minimumRecordingDuration: Double = 0.3  // Increased to 300ms for more reliable recordings
+    private let minimumRecordingDuration: Double = 0.2  // Minimum 200ms for reliable recordings
     private var recordingStartTime: Date?
     private var debugFrameCount: Int = 0  // Debug counter
     private var outputURL: URL? {
@@ -103,19 +103,17 @@ final class VoiceService: ObservableObject {
             return
         }
 
-        // Validate by duration written instead of file size
-        let framesDuration = Double(totalFramesWritten) / max(outputSampleRate, 1)
+        // Validate by duration - prioritize elapsed time as it's more reliable
         let elapsedDuration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
-        let seconds = max(framesDuration, elapsedDuration)
+        let framesDuration = Double(totalFramesWritten) / max(outputSampleRate, 1)
+        let seconds = max(elapsedDuration, framesDuration)
 
-        print("🎤 Recording stats: frames=\(totalFramesWritten), duration=\(String(format: "%.2f", seconds))s, buffers=\(debugFrameCount)")
-        print("🎤 Debug: framesDuration=\(String(format: "%.3f", framesDuration))s, elapsedDuration=\(String(format: "%.3f", elapsedDuration))s")
-        print("🎤 Debug: recordingStartTime=\(recordingStartTime?.description ?? "nil"), outputSampleRate=\(outputSampleRate)")
+        print("🎤 Recording stats: elapsed=\(String(format: "%.3f", elapsedDuration))s, frames=\(totalFramesWritten), frameDuration=\(String(format: "%.3f", framesDuration))s, buffers=\(debugFrameCount)")
 
         if seconds < minimumRecordingDuration {
             await MainActor.run {
                 try? FileManager.default.removeItem(at: url)
-                state = .error("Recording too short (\(String(format: "%.1f", seconds))s). Hold for at least \(String(format: "%.1f", minimumRecordingDuration))s.")
+                state = .error("Recording too short (\(String(format: "%.2f", seconds))s). Please hold the button for at least \(String(format: "%.1f", minimumRecordingDuration))s.")
                 outputURL = nil
                 recordingStartTime = nil
             }
@@ -175,6 +173,11 @@ final class VoiceService: ObservableObject {
             return
         }
 
+        // Capture start time BEFORE any async operations to prevent race conditions
+        let capturedStartTime = recordingStartTime
+        let capturedFrameCount = totalFramesWritten
+        let capturedDebugCount = debugFrameCount
+
         // Stop engine and cleanup
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
@@ -192,17 +195,18 @@ final class VoiceService: ObservableObject {
             return
         }
 
-        // Validate by duration written instead of file size
-        let framesDuration = Double(totalFramesWritten) / max(outputSampleRate, 1)
-        let elapsedDuration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
-        let seconds = max(framesDuration, elapsedDuration)
+        // Validate by duration - use captured values to prevent race conditions
+        let elapsedDuration = capturedStartTime.map { Date().timeIntervalSince($0) } ?? 0
+        let framesDuration = Double(capturedFrameCount) / max(outputSampleRate, 1)
+        let seconds = max(elapsedDuration, framesDuration)
 
-        print("🎤 Recording stats: frames=\(totalFramesWritten), duration=\(String(format: "%.2f", seconds))s, buffers=\(debugFrameCount)")
+        print("🎤 Recording stats: elapsed=\(String(format: "%.3f", elapsedDuration))s, frames=\(capturedFrameCount), frameDuration=\(String(format: "%.3f", framesDuration))s, buffers=\(capturedDebugCount)")
+        print("🎤 Start time was: \(capturedStartTime?.description ?? "nil"), using captured values to avoid race conditions")
 
         if seconds < minimumRecordingDuration {
             await MainActor.run {
                 try? FileManager.default.removeItem(at: url)
-                state = .error("Recording too short (\(String(format: "%.1f", seconds))s). Hold for at least \(String(format: "%.1f", minimumRecordingDuration))s.")
+                state = .error("Recording too short (\(String(format: "%.2f", seconds))s). Please hold the button for at least \(String(format: "%.1f", minimumRecordingDuration))s.")
                 outputURL = nil
                 recordingStartTime = nil
             }

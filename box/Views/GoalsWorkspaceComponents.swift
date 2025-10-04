@@ -132,7 +132,7 @@ private struct KanbanColumn: View {
     }
 }
 
-struct GanttTimelineView: View {
+struct GoalsTimelineView: View {
     let goals: [Goal]
 
     @State private var selectedHorizon: Horizon = .seven
@@ -452,8 +452,8 @@ private struct GanttRow: View {
     }
 
     private var dateRangeLabel: String {
-        let start = GanttTimelineView.dateFormatter.string(from: goalStart)
-        let end = GanttTimelineView.dateFormatter.string(from: goalEnd)
+        let start = GoalsTimelineView.dateFormatter.string(from: goalStart)
+        let end = GoalsTimelineView.dateFormatter.string(from: goalEnd)
         return "\(start) → \(end)"
     }
 
@@ -569,7 +569,7 @@ private struct GanttRow: View {
                 infoChip(icon: "gauge", text: "Progress \(progressPercent)%")
 
                 if let target = goal.targetDate {
-                    infoChip(icon: "calendar", text: "Target \(GanttTimelineView.dateFormatter.string(from: target))", tint: .blue)
+                    infoChip(icon: "calendar", text: "Target \(GoalsTimelineView.dateFormatter.string(from: target))", tint: .blue)
                 }
             case .event:
                 infoChip(icon: "clock", text: primaryEntryRelativeStart.map { "In \($0)" } ?? "Scheduled", tint: .blue.opacity(0.8))
@@ -1034,59 +1034,314 @@ private struct GoalTimelineSection: Identifiable {
 struct GoalCategoryGridView: View {
     let goals: [Goal]
     @Binding var selectedCategory: String?
+    @State private var selectedGoalID: UUID?
+    @State private var currentCategoryIndex: Int = 0
 
     private let priorityOrder: [Goal.Priority] = [.now, .next, .later]
+    private let palette: [Color] = [
+        Color(.systemBlue),
+        Color(.systemIndigo),
+        Color(.systemTeal),
+        Color(.systemGreen),
+        Color(.systemOrange),
+        Color(.systemPink),
+        Color(.systemPurple),
+        Color(.systemRed)
+    ]
 
     private var folders: [CategoryFolder] {
-        Dictionary(grouping: goals, by: { $0.category })
-            .map { CategoryFolder(name: $0.key, goals: $0.value) }
-            .sorted { lhs, rhs in
-                lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
+        Dictionary(grouping: goals, by: { folderName(for: $0) })
+            .map { CategoryFolder(name: $0.key, goals: $0.value, tint: tint(for: $0.key)) }
+            .sorted()
     }
 
-    private var activeFolder: CategoryFolder? {
-        if let selectedCategory,
-           let match = folders.first(where: { $0.name == selectedCategory }) {
+    private var currentFolder: CategoryFolder? {
+        folder(at: currentCategoryIndex)
+    }
+
+    private var selectedGoal: Goal? {
+        guard let folder = currentFolder ?? folders.first else { return nil }
+
+        if let selectedGoalID,
+           let match = folder.goals.first(where: { $0.id == selectedGoalID }) {
             return match
         }
-        return folders.first
+
+        return sortedGoals(in: folder).first
     }
 
-    private var deckGoals: [Goal] {
-        let sourceGoals = activeFolder?.goals ?? goals
-        return sourceGoals.sorted(by: deckSort)
-    }
-
-    private var deckTitle: String {
-        if let folder = activeFolder {
-            return folder.name
-        }
-        return "Featured Cards"
-    }
-
-    private var deckSubtitle: String {
-        if let folder = activeFolder {
-            return "\(folder.goals.count) card\(folder.goals.count == 1 ? "" : "s") in this folder"
-        }
-        let total = goals.count
-        return total == 0 ? "No cards yet" : "\(total) card\(total == 1 ? "" : "s") across all folders"
-    }
-
-    private var deckIsTruncated: Bool {
-        // No longer truncating - always show all goals
-        return false
+    private var goalsSignature: String {
+        goals
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+            .map { "\($0.id.uuidString)|\(Int($0.updatedAt.timeIntervalSince1970))" }
+            .joined(separator: ",")
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 28) {
+        VStack(alignment: .leading, spacing: 24) {
             if goals.isEmpty {
                 emptyState
             } else {
-                folderShelfSection
-                deckSection
+                folderStrip
+                goalFocusSection
             }
         }
+        .onAppear(perform: ensureSelectionValid)
+        .onChange(of: goalsSignature) { _, _ in ensureSelectionValid() }
+        .onChange(of: selectedCategory ?? "") { _, _ in syncIndexWithSelectedCategory() }
+        .onChange(of: currentCategoryIndex) { _, _ in syncSelectedCategoryWithIndex() }
+    }
+
+    private var folderStrip: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Folder switcher tabs
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(Array(folders.enumerated()), id: \.offset) { index, folder in
+                        folderTab(for: folder, isSelected: index == currentCategoryIndex)
+                            .onTapGesture {
+                                withAnimation(.smoothSpring) {
+                                    currentCategoryIndex = index
+                                    selectedCategory = folder.name
+                                }
+                            }
+                    }
+                }
+                .padding(.horizontal, 4)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+
+            // Current folder's goals as horizontal mini-cards
+            if let folder = currentFolder ?? folders.first {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("\(folder.goals.count) goals in \(folder.name)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 14) {
+                            ForEach(sortedGoals(in: folder)) { goal in
+                                MiniGoalCard(
+                                    goal: goal,
+                                    tint: folder.tint,
+                                    isSelected: selectedGoalID == goal.id
+                                )
+                                .onTapGesture {
+                                    withAnimation(.smoothSpring) {
+                                        selectedGoalID = goal.id
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(height: 160)
+                }
+            }
+        }
+    }
+
+    private func folderTab(for folder: CategoryFolder, isSelected: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isSelected ? folder.tint : folder.tint.opacity(0.6))
+
+                Text(folder.name)
+                    .font(.subheadline.weight(isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? folder.tint : .secondary)
+
+                Text("\(folder.goals.count)")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(folder.tint.opacity(isSelected ? 0.18 : 0.08))
+                    .clipShape(Capsule())
+                    .foregroundStyle(folder.tint)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                Capsule()
+                    .fill(isSelected ? folder.tint.opacity(0.12) : Color(.secondarySystemBackground))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(folder.tint.opacity(isSelected ? 0.35 : 0), lineWidth: 1.5)
+            )
+        }
+    }
+
+    private func folderBadge(for folder: CategoryFolder) -> some View {
+        HStack(spacing: 12) {
+            Capsule()
+                .fill(folder.tint.opacity(0.16))
+                .overlay(
+                    HStack(spacing: 10) {
+                        Image(systemName: "folder.fill")
+                            .foregroundStyle(folder.tint)
+                        Text(folder.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(folder.tint)
+                        Text("\(folder.goals.count)")
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(folder.tint.opacity(0.18))
+                            .clipShape(Capsule())
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                )
+
+            Spacer()
+        }
+        .padding(.horizontal, 4)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    private func tint(for name: String) -> Color {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return palette[0] }
+        let hash = abs(normalized.hashValue)
+        return palette[hash % palette.count]
+    }
+
+    private func folderName(for goal: Goal) -> String {
+        goal.category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unsorted" : goal.category
+    }
+
+    private func folder(at index: Int) -> CategoryFolder? {
+        guard index >= 0, index < folders.count else { return nil }
+        return folders[index]
+    }
+
+    private func ensureSelectionValid() {
+        guard !goals.isEmpty else {
+            selectedCategory = nil
+            selectedGoalID = nil
+            currentCategoryIndex = 0
+            return
+        }
+
+        if let selectedCategory,
+           let matchIndex = folders.firstIndex(where: { $0.name == selectedCategory }) {
+            currentCategoryIndex = matchIndex
+        } else {
+            currentCategoryIndex = min(currentCategoryIndex, max(folders.count - 1, 0))
+            selectedCategory = currentFolder?.name ?? folders.first?.name
+        }
+
+        if let folder = currentFolder ?? folders.first {
+            if let currentID = selectedGoalID,
+               folder.goals.contains(where: { $0.id == currentID }) {
+                // keep current selection
+            } else {
+                selectedGoalID = sortedGoals(in: folder).first?.id
+            }
+        }
+    }
+
+    private func syncIndexWithSelectedCategory() {
+        guard let selectedCategory else { return }
+        guard let index = folders.firstIndex(where: { $0.name == selectedCategory }) else { return }
+        if index != currentCategoryIndex {
+            withAnimation(.smoothSpring) {
+                currentCategoryIndex = index
+            }
+        }
+    }
+
+    private func syncSelectedCategoryWithIndex() {
+        guard let folder = currentFolder else { return }
+        if selectedCategory != folder.name {
+            selectedCategory = folder.name
+        }
+
+        if let currentID = selectedGoalID,
+           folder.goals.contains(where: { $0.id == currentID }) {
+            return
+        }
+
+        selectedGoalID = sortedGoals(in: folder).first?.id
+    }
+
+    private var categoryPager: some View {
+        TabView(selection: $currentCategoryIndex) {
+            ForEach(Array(folders.enumerated()), id: \.element.id) { index, folder in
+                CategoryPagerPage(
+                    folder: folder,
+                    goals: sortedGoals(in: folder),
+                    selectedGoalID: selectedGoalID,
+                    onSelectGoal: { goal in
+                        withAnimation(.smoothSpring) {
+                            currentCategoryIndex = index
+                            selectedCategory = folder.name
+                            selectedGoalID = goal.id
+                        }
+                    }
+                )
+                .padding(.horizontal, 2)
+                .tag(index)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .frame(height: 190)
+    }
+
+    private var pagerIndicators: some View {
+        HStack(spacing: 8) {
+            ForEach(Array(folders.enumerated()), id: \.offset) { index, folder in
+                Capsule()
+                    .fill(index == currentCategoryIndex ? folder.tint : folder.tint.opacity(0.18))
+                    .frame(width: index == currentCategoryIndex ? 28 : 10, height: 6)
+                    .animation(.easeInOut(duration: 0.2), value: currentCategoryIndex)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 4)
+    }
+
+    private var goalFocusSection: some View {
+        Group {
+            if let folder = currentFolder, let goal = selectedGoal {
+                VStack(alignment: .leading, spacing: 16) {
+                    FolderMetricStrip(folder: folder)
+
+                    GoalCardView(goal: goal)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .animation(.smoothSpring, value: goal.id)
+                }
+                .padding(22)
+                .background(
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        .fill(folder.tint.opacity(0.16))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        .stroke(folder.tint.opacity(0.35), lineWidth: 1.2)
+                )
+                .animation(.easeInOut(duration: 0.25), value: folder.id)
+            } else {
+                Text("Pick a card from the strip above to focus it.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                    )
+            }
+        }
+    }
+
+    private func sortedGoals(in folder: CategoryFolder) -> [Goal] {
+        folder.goals.sorted(by: deckSort)
     }
 
     private func deckSort(_ lhs: Goal, _ rhs: Goal) -> Bool {
@@ -1102,116 +1357,6 @@ struct GoalCategoryGridView: View {
         }
 
         return lhs.createdAt < rhs.createdAt
-    }
-
-    private var deckSection: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Label(deckTitle, systemImage: "folder.fill")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.primary)
-
-                Spacer(minLength: 12)
-
-                Text(deckSubtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if selectedCategory != nil {
-                    Button("Clear") {
-                        withAnimation(.smoothSpring) {
-                            selectedCategory = nil
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                }
-            }
-
-            if let folder = activeFolder {
-                FolderSummaryStrip(folder: folder)
-            } else {
-                FolderSummaryStrip(folder: CategoryFolder(name: "All", goals: goals))
-            }
-
-            if deckGoals.isEmpty {
-                Text("No cards to show yet. Ask Moss to draft your first goal.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-                    .background(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(Color.panelBackground)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                            )
-                    )
-            } else {
-                LazyVStack(spacing: 18) {
-                    ForEach(deckGoals) { goal in
-                        GoalCardView(goal: goal)
-                    }
-                }
-            }
-
-            if deckIsTruncated {
-                Text("Showing top focus. Pick a folder below to dive into the full stack.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    private var folderShelfSection: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text("Folders")
-                    .font(.headline)
-                    .fontWeight(.semibold)
-
-                Spacer()
-
-                if let folder = activeFolder {
-                    Text("Active: \(folder.activeCount) • Completed: \(folder.completedCount)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if !goals.isEmpty {
-                    let active = goals.filter { $0.activationState == .active }.count
-                    let completed = goals.filter { $0.activationState == .completed }.count
-                    Text("Active: \(active) • Completed: \(completed)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 16) {
-                    AllFolderTile(totalGoals: goals.count, activeGoals: goals.filter { $0.activationState == .active }.count, completedGoals: goals.filter { $0.activationState == .completed }.count, isSelected: selectedCategory == nil) {
-                        withAnimation(.smoothSpring) {
-                            selectedCategory = nil
-                        }
-                    }
-
-                    ForEach(folders) { folder in
-                        Button {
-                            withAnimation(.smoothSpring) {
-                                if selectedCategory == folder.name {
-                                    selectedCategory = nil
-                                } else {
-                                    selectedCategory = folder.name
-                                }
-                            }
-                        } label: {
-                            CategoryFolderTile(folder: folder, isSelected: selectedCategory == folder.name)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 4)
-            }
-        }
     }
 
     private var emptyState: some View {
@@ -1236,14 +1381,64 @@ struct GoalCategoryGridView: View {
         )
     }
 
-    struct CategoryFolder: Identifiable {
+    private struct CategoryPagerPage: View {
+        let folder: CategoryFolder
+        let goals: [Goal]
+        let selectedGoalID: UUID?
+        let onSelectGoal: (Goal) -> Void
+
+        var body: some View {
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .fill(folder.tint.opacity(0.18))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .stroke(folder.tint.opacity(0.35), lineWidth: 1)
+                    )
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 14) {
+                        ForEach(goals) { goal in
+                            MiniGoalCard(goal: goal, tint: folder.tint, isSelected: selectedGoalID == goal.id)
+                                .onTapGesture { onSelectGoal(goal) }
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 18)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+
+                Capsule(style: .continuous)
+                    .fill(folder.tint.opacity(0.7))
+                    .overlay(
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(folder.name)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color.white.opacity(0.92))
+                            Text("Swipe to see more")
+                                .font(.caption2)
+                                .foregroundStyle(Color.white.opacity(0.72))
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                    )
+                    .padding(14)
+            }
+            .padding(.horizontal, 6)
+        }
+    }
+}
+
+extension GoalCategoryGridView {
+    struct CategoryFolder: Identifiable, Comparable {
         let name: String
         let goals: [Goal]
+        var tint: Color
 
         var id: String { name }
 
-        var tint: Color {
-            GoalCategoryGridView.tint(for: name)
+        var sortKey: String {
+            name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         }
 
         var averageProgress: Double {
@@ -1261,208 +1456,144 @@ struct GoalCategoryGridView: View {
         }
 
         var openCount: Int {
-            goals.count - completedCount
+            goals.filter { $0.activationState != .completed && $0.activationState != .archived }.count
         }
 
         var nowCount: Int {
             goals.filter { $0.priority == .now }.count
         }
 
-        var previewGoals: [Goal] {
-            goals.sorted { lhs, rhs in
-                if lhs.progress == rhs.progress {
-                    return lhs.createdAt < rhs.createdAt
-                }
-                return lhs.progress > rhs.progress
-            }
+        static func < (lhs: CategoryFolder, rhs: CategoryFolder) -> Bool {
+            lhs.sortKey < rhs.sortKey
         }
-    }
-
-    static func tint(for name: String) -> Color {
-        let unicodeTotal = name.unicodeScalars.reduce(0) { $0 + Int($1.value) }
-        let hue = Double(unicodeTotal % 360) / 360.0
-        return Color(hue: hue, saturation: 0.55, brightness: 0.85)
     }
 }
 
-private struct FolderSummaryStrip: View {
+private struct FolderMetricStrip: View {
     let folder: GoalCategoryGridView.CategoryFolder
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                SummaryChip(icon: "gauge", label: "Avg", value: "\(Int(folder.averageProgress * 100))%", tint: folder.tint)
-                SummaryChip(icon: "checkmark.seal.fill", label: "Complete", value: "\(folder.completedCount)", tint: .blue)
-                SummaryChip(icon: "bolt", label: "Active", value: "\(folder.activeCount)", tint: .green)
-                SummaryChip(icon: "clock", label: "Open", value: "\(folder.openCount)", tint: .orange)
-                SummaryChip(icon: "flag.fill", label: "Now", value: "\(folder.nowCount)", tint: .red)
+            HStack(spacing: 10) {
+                FolderMetricChip(icon: "gauge", label: "Avg", value: "\(Int(folder.averageProgress * 100))%", tint: folder.tint)
+                FolderMetricChip(icon: "bolt.fill", label: "Active", value: "\(folder.activeCount)", tint: .green)
+                FolderMetricChip(icon: "checkmark.seal.fill", label: "Done", value: "\(folder.completedCount)", tint: .blue)
+                FolderMetricChip(icon: "clock", label: "Open", value: "\(folder.openCount)", tint: .orange)
+                FolderMetricChip(icon: "flag.fill", label: "Now", value: "\(folder.nowCount)", tint: .red)
             }
             .padding(.vertical, 4)
         }
         .scrollBounceBehavior(.basedOnSize)
     }
+}
 
-    struct SummaryChip: View {
-        let icon: String
-        let label: String
-        let value: String
-        let tint: Color
+private struct FolderMetricChip: View {
+    let icon: String
+    let label: String
+    let value: String
+    let tint: Color
 
-        var body: some View {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tint)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(value)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(.primary)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(value)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
-
-                    Text(label.uppercased())
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                Text(label.uppercased())
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(tint.opacity(0.12))
-            .clipShape(Capsule())
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(tint.opacity(0.12))
+        .clipShape(Capsule())
     }
 }
 
-private struct CategoryFolderTile: View {
-    let folder: GoalCategoryGridView.CategoryFolder
+private struct MiniGoalCard: View {
+    let goal: Goal
+    let tint: Color
     let isSelected: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(folder.tint)
-
-                Text(folder.name)
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.primary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Label(goal.priority.rawValue, systemImage: priorityIcon)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.white.opacity(0.15))
+                    .clipShape(Capsule())
 
                 Spacer()
 
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(folder.tint)
-                }
+                Text("\(Int(goal.progress * 100))%")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.85))
             }
 
-            ProgressView(value: folder.averageProgress)
+            Text(goal.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+
+            Spacer(minLength: 6)
+
+            ProgressView(value: goal.progress)
                 .progressViewStyle(.linear)
-                .tint(folder.tint)
+                .tint(.white.opacity(0.95))
 
-            HStack(spacing: 10) {
-                FolderSummaryStrip.SummaryChip(icon: "bolt", label: "Active", value: "\(folder.activeCount)", tint: .green)
-                FolderSummaryStrip.SummaryChip(icon: "checkmark.seal.fill", label: "Done", value: "\(folder.completedCount)", tint: .blue)
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(folder.previewGoals.prefix(3)) { goal in
-                    HStack(spacing: 8) {
-                        Capsule()
-                            .fill(goalBadgeColor(for: goal.priority))
-                            .frame(width: 6, height: 6)
-
-                        Text(goal.title)
-                            .font(.subheadline)
-                            .lineLimit(1)
-                            .foregroundStyle(.primary)
-
-                        Spacer()
-
-                        Text("\(Int(goal.progress * 100))%")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if folder.previewGoals.count > 3 {
-                    Text("+\(folder.previewGoals.count - 3) more")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Text(statusLabel)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.8))
         }
-        .padding(22)
-        .frame(width: 240, alignment: .leading)
-        .liquidGlassCard(
-            cornerRadius: 30,
-            tint: folder.tint.opacity(isSelected ? 0.45 : 0.22)
+        .frame(width: 170, height: 140, alignment: .leading)
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            tint.opacity(0.92),
+                            tint.opacity(0.6)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .stroke(folder.tint.opacity(isSelected ? 0.7 : 0.18), lineWidth: isSelected ? 2 : 1)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.white.opacity(isSelected ? 0.9 : 0.25), lineWidth: isSelected ? 2 : 1)
         )
+        .shadow(color: tint.opacity(isSelected ? 0.35 : 0.2), radius: isSelected ? 10 : 6, x: 0, y: 6)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Goal \(goal.title)")
+        .accessibilityValue("\(Int(goal.progress * 100)) percent complete")
     }
 
-    private func goalBadgeColor(for priority: Goal.Priority) -> Color {
-        switch priority {
-        case .now: return .red
-        case .next: return .orange
-        case .later: return .blue
+    private var priorityIcon: String {
+        switch goal.priority {
+        case .now: return "flame.fill"
+        case .next: return "clock.fill"
+        case .later: return "calendar"
         }
     }
-}
 
-private struct AllFolderTile: View {
-    let totalGoals: Int
-    let activeGoals: Int
-    let completedGoals: Int
-    let isSelected: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Image(systemName: "square.stack.3d.up.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.cyan)
-
-                    Text("All folders")
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.primary)
-
-                    Spacer()
-
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.cyan)
-                    }
-                }
-
-                Text("\(totalGoals) card\(totalGoals == 1 ? "" : "s") on the board")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 10) {
-                    FolderSummaryStrip.SummaryChip(icon: "bolt", label: "Active", value: "\(activeGoals)", tint: .green)
-                    FolderSummaryStrip.SummaryChip(icon: "checkmark.seal.fill", label: "Done", value: "\(completedGoals)", tint: .blue)
-                }
-            }
-            .padding(22)
-            .frame(width: 220, alignment: .leading)
-            .liquidGlassCard(
-                cornerRadius: 30,
-                tint: Color.cyan.opacity(isSelected ? 0.45 : 0.2)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .stroke(Color.cyan.opacity(isSelected ? 0.7 : 0.22), lineWidth: isSelected ? 2 : 1)
-            )
+    private var statusLabel: String {
+        switch goal.activationState {
+        case .active: return "Active"
+        case .completed: return "Completed"
+        case .draft: return "Draft"
+        case .archived: return "Archived"
         }
-        .buttonStyle(.plain)
     }
 }
 

@@ -270,7 +270,7 @@ struct GeneralChatView: View {
                 Text("This action cannot be undone.")
             }
         }
-        .onChange(of: userContextService.contextStatus) { newStatus in
+        .onChange(of: userContextService.contextStatus) { _, newStatus in
             contextReadyTask?.cancel()
 
             switch newStatus {
