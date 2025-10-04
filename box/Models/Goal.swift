@@ -626,12 +626,34 @@ class Goal {
         }
     }
 
-    /// Append a new user input
+    /// Append a new user input (legacy - doesn't add to chat)
     func appendUserInput(_ input: String) {
         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         var current = userInputs
         current.append(input)
         userInputs = current
+    }
+
+    /// Append a new user input AND add to chat history (preferred method)
+    func appendUserInput(_ input: String, modelContext: ModelContext) {
+        guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        // Add to userInputs array (for compatibility)
+        var current = userInputs
+        current.append(input)
+        userInputs = current
+
+        // ALSO add as ChatEntry so it's part of conversation history
+        let scope: ChatEntry.Scope = parent != nil ? .subgoal(id) : .goal(id)
+        let voiceEntry = ChatEntry(
+            content: "🎤 Voice input: \(input)",
+            isUser: true,
+            scope: scope
+        )
+        voiceEntry.importance = 0.7  // Voice inputs are important
+        modelContext.insert(voiceEntry)
+
+        print("✅ Added voice input to both userInputs and chat history")
     }
 
     // MARK: - Tree Grouping

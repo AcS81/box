@@ -35,6 +35,12 @@ struct GeneralChatView: View {
     @EnvironmentObject private var transcriptManager: VoiceTranscriptManager
 
     private var aiService: AIService { AIService.shared }
+    private var memoryService: ConversationMemoryService { ConversationMemoryService.shared }
+
+    // Memory system
+    private var userMemory: UserMemory {
+        ConversationMemoryService.getOrCreateUserMemory(modelContext: modelContext)
+    }
 
     private var generalChatMessages: [ChatEntry] {
         allChatEntries.filter { $0.scope == .general }
@@ -336,15 +342,29 @@ struct GeneralChatView: View {
             isProcessing = true
 
             do {
-                let context = await userContextService.buildContext(from: goals)
+                // Build unified context with memory
+                let memory = userMemory
+                let context = await userContextService.buildUnifiedContext(
+                    for: .general,
+                    goals: goals,
+                    allEntries: allChatEntries,
+                    userMemory: memory
+                )
 
                 isPreparingContext = false
+
+                // Smart message selection
+                let selectedHistory = userContextService.selectRelevantMessages(
+                    from: allChatEntries,
+                    for: .general,
+                    userMemory: memory
+                )
 
                 // Get structured response with actions using unified scope-based chat
                 let response = try await aiService.chatWithScope(
                     message: currentMessage,
                     scope: .general,
-                    history: generalChatMessages,
+                    history: selectedHistory,
                     context: context
                 )
 
@@ -356,6 +376,14 @@ struct GeneralChatView: View {
                 if !response.actions.isEmpty {
                     await executeActions(response.actions, requiresConfirmation: response.requiresConfirmation)
                 }
+
+                // Check if we should summarize
+                await memoryService.processConversation(
+                    scope: .general,
+                    entries: allChatEntries,
+                    userMemory: memory,
+                    modelContext: modelContext
+                )
 
             } catch {
                 // Show specific error message instead of generic one

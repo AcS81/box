@@ -451,6 +451,23 @@ struct GoalCardView: View {
         // Show current sequential step if available
         if let currentStep = goal.currentSequentialStep {
             currentStepCard(step: currentStep)
+        } else if goal.hasSequentialSteps {
+            // Show most recent completed step with target symbol
+            if let mostRecentStep = goal.completedSequentialSteps.last {
+                milestoneCard(
+                    icon: "target",
+                    title: mostRecentStep.title,
+                    detail: mostRecentStep.outcome,
+                    interval: DateInterval(
+                        start: mostRecentStep.createdAt, 
+                        end: mostRecentStep.targetDate ?? mostRecentStep.createdAt.addingTimeInterval(86400)
+                    ),
+                    accent: Color.indigo,
+                    metric: nil,
+                    unit: nil,
+                    confidence: nil
+                )
+            }
         } else if let projection = upcomingProjection {
             milestoneCard(
                 icon: projection.status == .inProgress ? "timer" : "scope",

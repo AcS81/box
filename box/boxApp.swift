@@ -18,7 +18,11 @@ struct boxApp: App {
             AIMirrorSnapshot.self,
             GoalSnapshot.self,
             GoalRevision.self,
-            ScheduledEventLink.self
+            ScheduledEventLink.self,
+            // Memory system models
+            UserMemory.self,
+            UserFact.self,
+            ConversationSummary.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 

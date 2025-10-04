@@ -64,6 +64,12 @@ struct AIContext {
     var goalSnapshots: [ChatGoalSnapshot]
     var existingCalendarEvents: [String]
 
+    // Memory system additions
+    var userFacts: [String] = []  // Persistent facts about user
+    var userPreferences: [String: String] = [:]  // User preferences
+    var conversationSummaries: [String] = []  // Recent conversation summaries
+    var crossScopeContext: String = ""  // Context from other scopes
+
     init(goals: [Goal] = [], patterns: [String: Any] = [:], preferredHours: (Int, Int)? = nil, existingEvents: [String] = []) {
         self.recentGoals = Array(goals.prefix(10))
         self.userPatterns = patterns
@@ -829,6 +835,27 @@ class AIService: ObservableObject {
 
     internal func buildContextSection(_ context: AIContext) -> String {
         var sections: [String] = []
+
+        // Memory: User facts
+        if !context.userFacts.isEmpty {
+            sections.append("WHAT I KNOW ABOUT YOU:\n" + context.userFacts.map { "• \($0)" }.joined(separator: "\n"))
+        }
+
+        // Memory: User preferences
+        if !context.userPreferences.isEmpty {
+            let prefs = context.userPreferences.map { key, value in "• \(key): \(value)" }.joined(separator: "\n")
+            sections.append("YOUR PREFERENCES:\n\(prefs)")
+        }
+
+        // Memory: Conversation summaries
+        if !context.conversationSummaries.isEmpty {
+            sections.append("PREVIOUS CONVERSATIONS:\n" + context.conversationSummaries.map { "• \($0)" }.joined(separator: "\n"))
+        }
+
+        // Memory: Cross-scope context
+        if !context.crossScopeContext.isEmpty {
+            sections.append(context.crossScopeContext)
+        }
 
         if !context.recentGoals.isEmpty {
             let recentGoalsList = context.recentGoals.prefix(5).map { goal in

@@ -122,6 +122,152 @@ class UserContextService: ObservableObject {
         }
     }
 
+    // MARK: - Unified Memory-Aware Context Building
+
+    func buildUnifiedContext(
+        for scope: ChatEntry.Scope,
+        goals: [Goal],
+        allEntries: [ChatEntry],
+        userMemory: UserMemory
+    ) async -> AIContext {
+        // Start with base context
+        var context = await buildContext(from: goals)
+
+        // Add memory layer
+        context.userFacts = userMemory.highConfidenceFacts.map { $0.fact }
+        context.userPreferences = userMemory.preferences
+
+        // Add conversation summaries for this scope
+        let scopeSummaries = userMemory.summaries(for: scope)
+        context.conversationSummaries = scopeSummaries.map { $0.summary }
+
+        // Add cross-scope awareness
+        context.crossScopeContext = buildCrossScopeContext(
+            currentScope: scope,
+            allEntries: allEntries,
+            userMemory: userMemory
+        )
+
+        return context
+    }
+
+    func selectRelevantMessages(
+        from allEntries: [ChatEntry],
+        for scope: ChatEntry.Scope,
+        userMemory: UserMemory
+    ) -> [ChatEntry] {
+        var selected: [ChatEntry] = []
+
+        // 1. Get summaries for this scope (as pseudo-messages for context)
+        let summaries = userMemory.summaries(for: scope).suffix(2)
+        for summary in summaries {
+            let summaryEntry = ChatEntry(
+                content: "📋 Summary: \(summary.summary)\n\nKey points: \(summary.keyPoints.joined(separator: ", "))",
+                isUser: false,
+                scope: scope,
+                timestamp: summary.createdAt
+            )
+            summaryEntry.importance = 0.9
+            selected.append(summaryEntry)
+        }
+
+        // 2. Get important messages (regardless of age)
+        let important = allEntries
+            .filter { $0.scope == scope && $0.isHighImportance && !$0.isSummarized }
+            .sorted { $0.timestamp > $1.timestamp }
+            .prefix(5)
+        selected.append(contentsOf: important)
+
+        // 3. Get recent messages
+        let recent = allEntries
+            .filter { $0.scope == scope && !$0.isSummarized }
+            .sorted { $0.timestamp > $1.timestamp }
+            .prefix(15)
+        selected.append(contentsOf: recent)
+
+        // 4. Cross-scope messages (for general chat)
+        if case .general = scope {
+            let crossScope = getCrossScopeMessages(allEntries: allEntries, userMemory: userMemory)
+            selected.append(contentsOf: crossScope)
+        }
+
+        // Remove duplicates and sort by timestamp
+        let uniqueSelected = Array(Set(selected.map { $0.id }))
+            .compactMap { id in selected.first { $0.id == id } }
+            .sorted { $0.timestamp < $1.timestamp }
+
+        return uniqueSelected
+    }
+
+    private func getCrossScopeMessages(
+        allEntries: [ChatEntry],
+        userMemory: UserMemory
+    ) -> [ChatEntry] {
+        // For general chat, show recent activity from ALL goal chats
+        var crossScope: [ChatEntry] = []
+
+        // Get recent messages from each goal scope
+        let goalScopes = Set(allEntries.compactMap { entry -> UUID? in
+            if case .goal(let id) = entry.scope {
+                return id
+            }
+            return nil
+        })
+
+        for goalId in goalScopes.prefix(5) {
+            let goalMessages = allEntries
+                .filter { entry in
+                    if case .goal(let id) = entry.scope, id == goalId {
+                        return true
+                    }
+                    return false
+                }
+                .sorted { $0.timestamp > $1.timestamp }
+                .prefix(2)  // Last 2 messages from each goal
+
+            crossScope.append(contentsOf: goalMessages)
+        }
+
+        return crossScope
+            .sorted { $0.timestamp > $1.timestamp }
+            .prefix(10)
+            .map { $0 }
+    }
+
+    private func buildCrossScopeContext(
+        currentScope: ChatEntry.Scope,
+        allEntries: [ChatEntry],
+        userMemory: UserMemory
+    ) -> String {
+        switch currentScope {
+        case .general:
+            // General chat sees activity from all goals
+            let recentGoalActivity = getCrossScopeMessages(allEntries: allEntries, userMemory: userMemory)
+            if recentGoalActivity.isEmpty {
+                return "No recent goal-specific activity."
+            }
+            return "Recent activity across goals:\n" + recentGoalActivity.map { entry in
+                "\(entry.scope.scopeLabel): \(entry.content.prefix(80))..."
+            }.joined(separator: "\n")
+
+        case .goal(let goalId):
+            // Goal chat sees relevant general chat decisions
+            let relevantGeneral = allEntries
+                .filter { $0.scope == .general && $0.referencedGoalIds.contains(goalId.uuidString) }
+                .sorted { $0.timestamp > $1.timestamp }
+                .prefix(3)
+
+            if relevantGeneral.isEmpty {
+                return ""
+            }
+            return "Relevant decisions from main chat:\n" + relevantGeneral.map { $0.content }.joined(separator: "\n")
+
+        case .subgoal:
+            // Subgoal sees parent context
+            return ""
+        }
+    }
+
     /// Generate a cache key based on goal IDs and update times
     private func generateCacheKey(for goals: [Goal]) -> String {
         let signature = goals

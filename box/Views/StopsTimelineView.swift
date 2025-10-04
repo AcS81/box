@@ -98,9 +98,9 @@ struct StopsTimelineView: View {
             StopProgressBar(goal: goal)
 
             // Current stop card (edit & complete)
-            CurrentStopCard(goal: goal) {
+            CurrentStopCard(goal: goal, onComplete: {
                 handleStopCompletion(for: goal)
-            }
+            }, isGenerating: isGenerating)
 
             // Next stop preview
             NextStopPreview(goal: goal)
@@ -294,17 +294,9 @@ struct StopsTimelineView: View {
                     newStep.stepStatus = .current  // Make this the active step
                 }
 
-                // Apply tree grouping if provided by AI
+                // Apply tree grouping if provided by AI - create real parent Goals
                 if let treeGrouping = nextStepResponse.treeGrouping {
-                    let sections = treeGrouping.sections.map { section in
-                        TreeSection(
-                            title: section.title,
-                            stepIndices: section.stepIndices,
-                            isComplete: section.isComplete
-                        )
-                    }
-                    goal.treeGroupingSections = sections
-                    print("📁 Applied tree grouping: \(sections.count) sections")
+                    applyTreeStructure(treeGrouping: treeGrouping, to: goal)
                 }
 
                 // Sync parent goal progress with sequential steps
@@ -317,6 +309,113 @@ struct StopsTimelineView: View {
                 print("❌ Sequential step completion error: \(error)")
             }
         }
+    }
+
+    /// Creates real parent-child Goal hierarchy from AI's tree grouping
+    @MainActor
+    private func applyTreeStructure(treeGrouping: TreeGrouping, to goal: Goal) {
+        print("📁 Applying tree structure with \(treeGrouping.sections.count) sections")
+
+        // Work with current sequential steps
+        var steps = goal.sequentialSteps
+        var processedIndices = Set<Int>()
+        var parentsToInsert: [(index: Int, parent: Goal)] = []
+
+        // Process each section to create parent Goals
+        for section in treeGrouping.sections.sorted(by: { $0.stepIndices.min() ?? 0 < $1.stepIndices.min() ?? 0 }) {
+            guard !section.stepIndices.isEmpty else { continue }
+
+            // Validate indices
+            let validIndices = section.stepIndices.filter { $0 < steps.count }
+            guard !validIndices.isEmpty else { continue }
+
+            // Skip if already processed
+            if validIndices.contains(where: { processedIndices.contains($0) }) {
+                continue
+            }
+
+            // Get the child steps
+            let childSteps = validIndices.compactMap { index -> Goal? in
+                guard steps.indices.contains(index) else { return nil }
+                return steps[index]
+            }
+
+            guard !childSteps.isEmpty else { continue }
+
+            // Create parent Goal
+            let parent = Goal(title: section.title, priority: goal.priority)
+            parent.category = goal.category
+            parent.content = "Group containing \(childSteps.count) steps"
+            parent.isSequentialStep = true
+            parent.orderIndexInParent = validIndices.min() ?? 0
+            parent.parent = goal
+
+            // Calculate parent status based on children
+            let allCompleted = childSteps.allSatisfy { $0.stepStatus == .completed }
+            let hasCurrentChild = childSteps.contains { $0.stepStatus == .current }
+
+            if allCompleted {
+                parent.stepStatus = .completed
+                parent.progress = 1.0
+            } else if hasCurrentChild {
+                parent.stepStatus = .current
+                let completedCount = childSteps.filter { $0.stepStatus == .completed }.count
+                parent.progress = Double(completedCount) / Double(childSteps.count)
+            } else {
+                parent.stepStatus = .pending
+                parent.progress = 0.0
+            }
+
+            // Move children to parent
+            if parent.subgoals == nil {
+                parent.subgoals = []
+            }
+            for (idx, child) in childSteps.enumerated() {
+                child.parent = parent
+                child.orderIndexInParent = idx
+                parent.subgoals?.append(child)
+            }
+
+            // Insert parent at the position of first child
+            let insertPosition = validIndices.min() ?? 0
+            parentsToInsert.append((index: insertPosition, parent: parent))
+
+            // Mark these indices as processed
+            validIndices.forEach { processedIndices.insert($0) }
+
+            // Insert parent into model context
+            modelContext.insert(parent)
+
+            print("  ✓ Created parent '\(parent.title)' with \(childSteps.count) children")
+        }
+
+        // Remove processed children from main sequential steps and insert parents
+        // Work backwards to avoid index issues
+        let indicesToRemove = Array(processedIndices).sorted(by: >)
+        for index in indicesToRemove {
+            if steps.indices.contains(index) {
+                let child = steps[index]
+                // Remove from goal's subgoals array
+                if let subgoalIndex = goal.subgoals?.firstIndex(where: { $0.id == child.id }) {
+                    goal.subgoals?.remove(at: subgoalIndex)
+                }
+            }
+        }
+
+        // Insert parents in correct positions
+        for (_, parent) in parentsToInsert.sorted(by: { $0.index < $1.index }) {
+            if goal.subgoals == nil {
+                goal.subgoals = []
+            }
+            goal.subgoals?.append(parent)
+        }
+
+        // Re-index all sequential steps
+        for (index, step) in goal.sequentialSteps.enumerated() {
+            step.orderIndexInParent = index
+        }
+
+        print("📁 Tree structure applied: \(parentsToInsert.count) parents created")
     }
 
 }

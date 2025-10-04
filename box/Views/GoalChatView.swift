@@ -30,6 +30,12 @@ struct GoalChatView: View {
     @EnvironmentObject private var lifecycleService: GoalLifecycleService
 
     private var aiService: AIService { AIService.shared }
+    private var memoryService: ConversationMemoryService { ConversationMemoryService.shared }
+
+    // Memory system
+    private var userMemory: UserMemory {
+        ConversationMemoryService.getOrCreateUserMemory(modelContext: modelContext)
+    }
 
     let suggestions = [
         "Break this down into steps",
@@ -328,14 +334,25 @@ struct GoalChatView: View {
             isProcessing = true
 
             do {
-                // Build rich context with snapshots asynchronously
+                // Build rich context with snapshots and memory
                 let goalsSnapshot = currentGoals()
-                let context = await userContextService.buildContext(from: goalsSnapshot)
+                let allEntries = fetchAllChatEntries()
+                let memory = userMemory
+                let context = await userContextService.buildUnifiedContext(
+                    for: chatScope,
+                    goals: goalsSnapshot,
+                    allEntries: allEntries,
+                    userMemory: memory
+                )
 
                 isPreparingContext = false
 
-                // Fetch conversation history for this scope
-                let history = fetchChatHistory(for: chatScope)
+                // Fetch conversation history with smart selection
+                let history = userContextService.selectRelevantMessages(
+                    from: allEntries,
+                    for: chatScope,
+                    userMemory: memory
+                )
 
                 // Get structured response with actions using unified scope-based chat
                 let response = try await aiService.chatWithScope(
@@ -356,6 +373,14 @@ struct GoalChatView: View {
 
                 // Update goal
                 goal.updatedAt = Date()
+
+                // Check if we should summarize
+                await memoryService.processConversation(
+                    scope: chatScope,
+                    entries: fetchAllChatEntries(),
+                    userMemory: memory,
+                    modelContext: modelContext
+                )
 
                 // Success haptic
                 let notificationFeedback = UINotificationFeedbackGenerator()
@@ -409,14 +434,11 @@ struct GoalChatView: View {
         feedback.notificationOccurred(target ? .success : .warning)
     }
 
-    private func fetchChatHistory(for scope: ChatEntry.Scope) -> [ChatEntry] {
+    private func fetchAllChatEntries() -> [ChatEntry] {
         let descriptor = FetchDescriptor<ChatEntry>(
             sortBy: [SortDescriptor(\.timestamp, order: .forward)]
         )
-        guard let allEntries = try? modelContext.fetch(descriptor) else { return [] }
-
-        // Filter by scope
-        return allEntries.filter { $0.scope == scope }
+        return (try? modelContext.fetch(descriptor)) ?? []
     }
 
     @MainActor

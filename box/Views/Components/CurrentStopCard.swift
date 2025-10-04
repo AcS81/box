@@ -10,6 +10,7 @@ import SwiftUI
 struct CurrentStopCard: View {
     @Bindable var goal: Goal
     let onComplete: () -> Void
+    let isGenerating: Bool  // Loading state from parent
 
     @State private var isEditing = false
     @State private var editedTitle: String = ""
@@ -33,6 +34,11 @@ struct CurrentStopCard: View {
                     viewModeContent(for: step)
                 }
 
+                // Show children if this step is a parent
+                if step.hasSubtasks {
+                    childrenSection(for: step)
+                }
+
                 actionButtons(for: step)
             }
             .padding(24)
@@ -43,7 +49,7 @@ struct CurrentStopCard: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.orange.opacity(0.3), lineWidth: 2)
+                    .stroke(step.hasSubtasks ? Color.blue.opacity(0.4) : Color.orange.opacity(0.3), lineWidth: 2)
             )
             .onAppear {
                 editedTitle = step.title
@@ -58,14 +64,25 @@ struct CurrentStopCard: View {
     private func header(for step: Goal) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("Step \(step.orderIndexInParent + 1)", systemImage: "play.circle.fill")
+                Label("Step \(step.orderIndexInParent + 1)", systemImage: step.hasSubtasks ? "folder.fill" : "play.circle.fill")
                     .font(.caption)
                     .fontWeight(.semibold)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(step.hasSubtasks ? .blue : .orange)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(Color.orange.opacity(0.15))
+                    .background((step.hasSubtasks ? Color.blue : Color.orange).opacity(0.15))
                     .clipShape(Capsule())
+
+                if step.hasSubtasks {
+                    Label("Group", systemImage: "arrow.triangle.branch")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.blue.opacity(0.15))
+                        .clipShape(Capsule())
+                }
 
                 Spacer()
 
@@ -191,6 +208,90 @@ struct CurrentStopCard: View {
     }
 
     @ViewBuilder
+    private func childrenSection(for step: Goal) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Image(systemName: "folder.fill")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                Text("Contains \(step.sortedSubgoals.count) sub-steps")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.blue)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.blue.opacity(0.1))
+            .clipShape(Capsule())
+
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(step.sortedSubgoals) { child in
+                    childStepRow(child)
+                }
+            }
+            .padding(.leading, 16)
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.blue.opacity(0.3))
+                    .frame(width: 2)
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.blue.opacity(0.05))
+        )
+    }
+
+    private func childStepRow(_ child: Goal) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(child.stepStatus == .completed ? Color.green.opacity(0.2) : Color.gray.opacity(0.2))
+                    .frame(width: 32, height: 32)
+
+                Image(systemName: child.stepStatus == .completed ? "checkmark.circle.fill" : child.stepStatus.icon)
+                    .font(.caption)
+                    .foregroundStyle(child.stepStatus == .completed ? .green : .gray)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(child.title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(child.stepStatus == .completed ? .secondary : .primary)
+                    .strikethrough(child.stepStatus == .completed)
+
+                if !child.outcome.isEmpty {
+                    Text(child.outcome)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                if let targetDate = child.targetDate {
+                    Label(targetDate.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer()
+
+            if child.stepStatus == .completed {
+                Image(systemName: "lock.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+
+    @ViewBuilder
     private func editModeContent(for step: Goal) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
@@ -286,19 +387,29 @@ struct CurrentStopCard: View {
                     onComplete()
                 } label: {
                     HStack {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.headline)
-                        Text("Mark Complete")
-                            .font(.headline)
-                            .fontWeight(.semibold)
+                        if isGenerating {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .scaleEffect(0.8)
+                            Text("Generating Next Step...")
+                                .font(.headline)
+                                .fontWeight(.semibold)
+                        } else {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.headline)
+                            Text("Mark Complete")
+                                .font(.headline)
+                                .fontWeight(.semibold)
+                        }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                    .background(Color.orange)
+                    .background(isGenerating ? Color.orange.opacity(0.6) : Color.orange)
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
                 .buttonStyle(.plain)
+                .disabled(isGenerating)
             }
         }
     }
@@ -355,18 +466,20 @@ struct CurrentStopCard: View {
 }
 
 #Preview {
-    let goal = Goal(title: "Build iOS App", priority: .now)
-    goal.activationState = .active
+    @Previewable @State var goal: Goal = {
+        let g = Goal(title: "Build iOS App", priority: .now)
+        g.activationState = .active
+        let step = g.createSequentialStep(
+            title: "Create MVP Prototype",
+            outcome: "Working demo with core features X, Y, Z implemented",
+            targetDate: Date().addingTimeInterval(7*86400)
+        )
+        step.stepStatus = .current
+        step.content = "Focus on building the essential screens and connecting them together. Get the basic flow working before adding polish."
+        return g
+    }()
 
-    let step = goal.createSequentialStep(
-        title: "Create MVP Prototype",
-        outcome: "Working demo with core features X, Y, Z implemented",
-        targetDate: Date().addingTimeInterval(7*86400)
-    )
-    step.stepStatus = .current
-    step.content = "Focus on building the essential screens and connecting them together. Get the basic flow working before adding polish."
-
-    return CurrentStopCard(goal: goal, onComplete: {})
+    CurrentStopCard(goal: goal, onComplete: {}, isGenerating: false)
         .padding()
         .background(Color(.systemGroupedBackground))
 }
