@@ -96,7 +96,7 @@ struct CurrentStopCard: View {
                 HStack {
                     Image(systemName: showInputField ? "chevron.down" : "chevron.right")
                         .font(.caption)
-                    Text("Add context (budget, constraints, etc.)")
+                    Text("✏️ Your Input (preferences, constraints, data...)")
                         .font(.caption)
                         .fontWeight(.medium)
                     Spacer()
@@ -106,26 +106,46 @@ struct CurrentStopCard: View {
             .buttonStyle(.plain)
 
             if showInputField {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("e.g., Budget: $340k, Timeline: Q2", text: $contextualInput)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.callout)
-
-                    if !contextualInput.isEmpty {
-                        Button {
-                            saveContextualInput(to: step)
-                        } label: {
-                            Text("Save Context")
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(Color.blue)
-                                .clipShape(Capsule())
+                VStack(alignment: .leading, spacing: 12) {
+                    // Show existing user inputs
+                    if let step = currentStep, !step.userInputs.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(step.userInputs.enumerated()), id: \.offset) { index, input in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text("•")
+                                        .foregroundStyle(.blue)
+                                    Text(input)
+                                        .font(.callout)
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                }
+                            }
                         }
-                        .buttonStyle(.plain)
+                        .padding(.bottom, 8)
                     }
+
+                    // Input field + Append button
+                    if let step = currentStep {
+                        HStack(spacing: 8) {
+                            TextField("e.g., 8pm-10pm: study time, Budget: $340k", text: $contextualInput)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.callout)
+
+                            Button {
+                                appendUserInput(to: step)
+                            } label: {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.blue)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(contextualInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+
+                    Text("These inputs will inform the AI when generating future steps")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -153,19 +173,19 @@ struct CurrentStopCard: View {
 
         if !step.content.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Label("Details", systemImage: "text.alignleft")
+                Label("💡 AI Thinks (How to do it)", systemImage: "lightbulb.fill")
                     .font(.caption)
                     .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.purple)
 
                 Text(step.content)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(.secondarySystemBackground))
+            .background(Color.purple.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
     }
@@ -262,7 +282,9 @@ struct CurrentStopCard: View {
                 }
                 .buttonStyle(.plain)
 
-                Button(action: onComplete) {
+                Button {
+                    onComplete()
+                } label: {
                     HStack {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.headline)
@@ -322,18 +344,13 @@ struct CurrentStopCard: View {
         return formatter.string(from: date)
     }
 
-    private func saveContextualInput(to step: Goal) {
-        // Append contextual input to step's content
-        let prefix = step.content.isEmpty ? "" : "\n\n"
-        let contextSection = "💡 Context: \(contextualInput)"
-        step.content = step.content + prefix + contextSection
+    private func appendUserInput(to step: Goal) {
+        // Append user input to the list
+        step.appendUserInput(contextualInput)
         goal.updatedAt = Date()
 
-        // Clear input and hide field
-        withAnimation {
-            contextualInput = ""
-            showInputField = false
-        }
+        // Clear input field (keep field visible for more inputs)
+        contextualInput = ""
     }
 }
 

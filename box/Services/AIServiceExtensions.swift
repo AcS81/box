@@ -175,9 +175,11 @@ extension AIService {
         let allStepTitles = allSteps.map { "- \"\($0.title)\"" }.joined(separator: "\n")
 
         let historySection = completedSteps.map { step in
-            """
+            let userInputsList = step.userInputs.isEmpty ? "N/A" : step.userInputs.map { "• \($0)" }.joined(separator: "\n              ")
+            return """
             - Step \(step.orderIndexInParent + 1): "\(step.title)"
               Outcome: \(step.outcome)
+              User Inputs: \(userInputsList)
               Progress: \(Int(step.progress * 100))%
             """
         }.joined(separator: "\n")
@@ -230,15 +232,74 @@ extension AIService {
         - If you're tempted to add a duplicate-sounding step, set isGoalComplete: true instead
         - Each step should represent meaningful NEW progress toward the goal
 
+        TREE GROUPING ANALYSIS:
+        Look at all completed and pending steps and identify logical groupings/phases/sections.
+        Consider:
+        - Which steps naturally belong together? (e.g., multiple competitor analyses)
+        - What phases emerged from the work? (e.g., "Research Phase", "Competitive Analysis")
+        - How would you organize these steps into a hierarchical tree structure?
+        - Mark sections as complete if all their steps are completed
+
+        PROACTIVE GUIDANCE (CRITICAL):
+        Don't just tell the user HOW to find information - GIVE THEM THE INFORMATION DIRECTLY.
+        Don't say "research X" - actually provide the key knowledge about X.
+        Don't say "identify your goals" - propose specific goals based on context.
+        Don't say "create a plan" - provide the actual plan.
+
+        BE PROACTIVE. ANSWER YOUR OWN QUESTIONS. DO THE THINKING FOR THE USER.
+
+        Use the user's previous inputs and context to make suggestions EVEN MORE SPECIFIC:
+        - If they said "Budget: $340k" - use that number in your recommendations
+        - If they said "Prefer mornings" - schedule activities in morning
+        - If they said "8pm-10pm study" - incorporate that into the plan
+        - Adapt your suggestions to THEIR specific situation
+
+        Include in "aiSuggestion":
+        - Actual knowledge, facts, or recommendations (not just "how to learn it")
+        - Specific examples, numbers, data points
+        - Concrete next actions with details filled in
+        - Your best judgment on what they should do
+        - Actual content, not meta-advice
+        - Personalized to their inputs when available
+
+        ❌ BAD examples (too meta, not helpful enough):
+        - "Research nutrition concepts by reading articles and taking notes on macros and calories"
+        - "Identify your main goals and prioritize them by importance"
+        - "Create a weekly schedule by blocking out time for each activity"
+
+        ✅ GOOD examples (proactive, specific, actually helpful):
+        - "Nutrition basics: Proteins build muscle (aim 0.8g per lb bodyweight), Carbs fuel energy (focus on complex carbs like oats, rice), Fats support hormones (need healthy fats like avocado, nuts). Calories = energy units. Eat 500 cal deficit to lose 1lb/week, surplus to gain. Track with MyFitnessPal first week to learn portions."
+        - "Based on typical goals: Career (advance to senior role within 2 years), Health (workout 3x/week, lose 15lbs), Relationships (date night weekly, call family 2x/month), Learning (complete Python course by June). Prioritize health first since energy affects everything else."
+        - "Weekly plan: Mon/Wed/Fri 7am workout 45min. Tue/Thu deep work 9-11am on biggest project. Every evening 8-9pm learning time. Sat morning meal prep 2hrs. Sun rest + social. Block these in calendar now, protect the time, adjust after 2 weeks based on what stuck."
+
         Return as JSON:
         {
             "title": "Build core prototype",
             "outcome": "Working demo of main features ready for testing",
+            "aiSuggestion": "Core features for MVP: (1) User signup/login, (2) Create/edit goals, (3) View progress dashboard, (4) Mark tasks complete, (5) Basic notifications. Build with React + Supabase (fastest). Day 1-2: Setup + auth page. Day 3-4: Goal CRUD. Day 5: Dashboard with charts. Day 6-7: Polish + test with 3 friends. Deploy on Vercel (free). Skip: Settings, themes, advanced filters - add later based on feedback. This gets you to testable product in 1 week.",
             "daysFromNow": 14,
             "reasoning": "Why this step comes next and how it differs from all previous steps",
             "isGoalComplete": false,
-            "confidenceLevel": 0.85
+            "confidenceLevel": 0.85,
+            "treeGrouping": {
+                "sections": [
+                    {
+                        "title": "Research Phase",
+                        "stepIndices": [0, 1],
+                        "isComplete": true
+                    },
+                    {
+                        "title": "Competitive Analysis",
+                        "stepIndices": [2, 3, 4],
+                        "isComplete": true
+                    }
+                ]
+            }
         }
+
+        NOTE: stepIndices use 0-based indexing (0 = first step, 1 = second step, etc.)
+        NOTE: treeGrouping is OPTIONAL - only include if you identify meaningful groupings
+        NOTE: aiSuggestion is REQUIRED - always provide helpful guidance
 
         CRITICAL: Return ONLY the JSON object. No additional text.
         """

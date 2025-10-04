@@ -28,6 +28,7 @@ struct ContentView: View {
     @State private var chatFocusTrigger = false
     @State private var splashPhase: SplashPhase = .idle
     @State private var isAppReady = false
+    @State private var hasPreloaded = false
 
     var body: some View {
         ZStack {
@@ -46,7 +47,7 @@ struct ContentView: View {
                 SplashScreen(
                     phase: $splashPhase,
                     onReadyToUnlock: {
-                        Task { await playUnlockAnimationAndEnter() }
+                        await enterApp()
                     }
                 )
                 .transition(.opacity.combined(with: .scale))
@@ -62,15 +63,8 @@ struct ContentView: View {
             }
         }
         .task(id: hasCompletedOnboarding) {
-            guard hasCompletedOnboarding else { return }
-            await startSplashLoop()
-        }
-        .task(id: splashPhase) {
-            guard hasCompletedOnboarding, splashPhase == .looping else { return }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            await MainActor.run {
-                splashPhase = .unlocking
-            }
+            guard hasCompletedOnboarding, !hasPreloaded else { return }
+            await preloadApp()
         }
     }
 }
@@ -111,26 +105,66 @@ private extension ContentView {
         }
     }
 
-    func startSplashLoop() async {
+    // MARK: - Splash & Preload
+    
+    func preloadApp() async {
         guard splashPhase == .idle else { return }
+        
+        // Start loading animation
         await MainActor.run {
-            splashPhase = .looping
+            splashPhase = .loading
+        }
+        
+        // Minimum animation time for smoothness
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        
+        // Do all the heavy preloading here
+        let goalsSnapshot = Array(goals)
+        
+        // Generate daily insights
+        await proactiveService.generateDailyInsights(from: goalsSnapshot)
+        
+        // Process autopilot goals
+        await autopilotService.processAutopilotGoals(goalsSnapshot, modelContext: modelContext)
+        
+        // Mark as preloaded
+        await MainActor.run {
+            hasPreloaded = true
+        }
+        
+        // Wait for current bounce to complete
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        
+        // Move to ready phase (ball settles, START button shows)
+        await MainActor.run {
+            splashPhase = .readyToStart
         }
     }
-
-    func playUnlockAnimationAndEnter() async {
+    
+    func enterApp() async {
+        // User tapped START button
         guard !isAppReady else { return }
+        
+        // Gate animation plays, then enter
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        
         await MainActor.run {
-            splashPhase = .unlocking
-        }
-
-        try? await Task.sleep(nanoseconds: 1_200_000_000) // Allow gate animation to play
-
-        await MainActor.run {
-            isAppReady = true
+            withAnimation(.easeOut(duration: 0.4)) {
+                isAppReady = true
+            }
             splashPhase = .completed
             chatFocusTrigger = true
         }
+        
+        // Start ongoing services now that user is in
+        autopilotService.startMonitoring()
+        lifecycleService.startScheduleMaintenance(
+            goalsProvider: {
+                let descriptor = FetchDescriptor<Goal>()
+                return (try? modelContext.fetch(descriptor)) ?? []
+            },
+            modelContext: modelContext
+        )
     }
 
     var chatTabView: some View {
@@ -146,20 +180,6 @@ private extension ContentView {
             .padding(.vertical, 36)
         }
         .linedPaperBackground(spacing: 44, marginX: 64)
-        .task {
-            await generateDailyInsights()
-            autopilotService.startMonitoring()
-
-            lifecycleService.startScheduleMaintenance(
-                goalsProvider: {
-                    let descriptor = FetchDescriptor<Goal>()
-                    return (try? modelContext.fetch(descriptor)) ?? []
-                },
-                modelContext: modelContext
-            )
-
-            await autopilotService.processAutopilotGoals(Array(goals), modelContext: modelContext)
-        }
         .onDisappear {
             autopilotService.stopMonitoring()
             lifecycleService.stopScheduleMaintenance()

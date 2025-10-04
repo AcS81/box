@@ -300,6 +300,77 @@ struct BlueprintGoalView: View {
             Divider()
                 .background(Color.paperSpeck.opacity(0.3))
 
+            // If tree grouping exists, show grouped structure
+            if !goal.treeGroupingSections.isEmpty {
+                groupedTimelineView
+            } else {
+                // Fallback to simple timeline
+                simpleTimelineView
+            }
+        }
+    }
+
+    private var groupedTimelineView: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            ForEach(goal.treeGroupingSections) { section in
+                let sectionSteps: [Goal] = section.stepIndices.compactMap { index in
+                    guard goal.sequentialSteps.indices.contains(index) else { return nil }
+                    return goal.sequentialSteps[index]
+                }
+
+                if !sectionSteps.isEmpty {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Image(systemName: section.isComplete ? "checkmark.circle.fill" : "folder.fill")
+                                .font(.headline)
+                            Text(section.title)
+                                .font(.headline.weight(.bold))
+                            Spacer()
+                            if section.isComplete {
+                                Image(systemName: "lock.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            }
+                        }
+                        .foregroundStyle(section.isComplete ? .green : .blue)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(section.isComplete ? Color.green.opacity(0.15) : Color.blue.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                        ForEach(sectionSteps) { step in
+                            let color: Color = step.stepStatus == .completed ? .green : (step.stepStatus == .current ? .orange : .gray)
+                            StepCard(step: step, color: color, isLocked: step.stepStatus != .current)
+                                .padding(.leading, 16)
+                        }
+                    }
+                }
+            }
+
+            // Show ungrouped steps (not in any section)
+            let allGroupedIndices = Set(goal.treeGroupingSections.flatMap { $0.stepIndices })
+            let ungroupedSteps = goal.sequentialSteps.enumerated().compactMap { (index, step) in
+                allGroupedIndices.contains(index) ? nil : step
+            }
+
+            if !ungroupedSteps.isEmpty {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Other Steps")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+
+                    ForEach(ungroupedSteps) { step in
+                        let color: Color = step.stepStatus == .completed ? .green : (step.stepStatus == .current ? .orange : .gray)
+                        StepCard(step: step, color: color, isLocked: step.stepStatus != .current)
+                    }
+                }
+            }
+        }
+    }
+
+    private var simpleTimelineView: some View {
+        VStack(alignment: .leading, spacing: 20) {
             // Until Now (Completed)
             if !goal.completedSequentialSteps.isEmpty {
                 timelineSection(

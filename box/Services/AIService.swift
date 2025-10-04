@@ -1461,10 +1461,22 @@ struct NextStopResponse: Codable {
 struct NextSequentialStepResponse: Codable {
     let title: String
     let outcome: String
+    let aiSuggestion: String?  // AI's proactive guidance on HOW to accomplish this step
     let daysFromNow: Int?
     let reasoning: String?
     let isGoalComplete: Bool?  // AI decides if goal is finished after this step
     let confidenceLevel: Double?  // AI's confidence in completion assessment (0-1)
+    let treeGrouping: TreeGrouping?  // Emergent structure/sections from AI analysis
+}
+
+struct TreeGrouping: Codable {
+    let sections: [TreeGroupingSection]
+
+    struct TreeGroupingSection: Codable {
+        let title: String              // e.g. "Competitive Analysis"
+        let stepIndices: [Int]         // e.g. [2, 3, 4] - which steps belong to this section
+        let isComplete: Bool           // true if all steps in section are completed
+    }
 }
 
 struct InitialRoadmapResponse: Codable {

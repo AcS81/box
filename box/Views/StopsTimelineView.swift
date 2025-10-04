@@ -280,15 +280,31 @@ struct StopsTimelineView: View {
                     )
                 )
 
+                // Set AI's proactive guidance as content
+                newStep.content = nextStepResponse.aiSuggestion ?? ""
+
                 // Check if AI says goal is complete
                 if nextStepResponse.isGoalComplete == true {
                     print("🎯 AI indicates goal is complete (confidence: \(nextStepResponse.confidenceLevel ?? 0))")
                     newStep.stepStatus = .current  // Final step - user needs to complete it
-                    // Mark this as the final step
-                    newStep.content = "⭐️ Final Step - Complete this to finish the goal!\n\n" + (newStep.content.isEmpty ? nextStepResponse.outcome : newStep.content)
+                    // Mark this as the final step (prepend to existing AI suggestion)
+                    newStep.content = "⭐️ Final Step - Complete this to finish the goal!\n\n" + (nextStepResponse.aiSuggestion ?? nextStepResponse.outcome)
                     errorMessage = "✅ Final step: \(nextStepResponse.title). Complete this to finish the goal!"
                 } else {
                     newStep.stepStatus = .current  // Make this the active step
+                }
+
+                // Apply tree grouping if provided by AI
+                if let treeGrouping = nextStepResponse.treeGrouping {
+                    let sections = treeGrouping.sections.map { section in
+                        TreeSection(
+                            title: section.title,
+                            stepIndices: section.stepIndices,
+                            isComplete: section.isComplete
+                        )
+                    }
+                    goal.treeGroupingSections = sections
+                    print("📁 Applied tree grouping: \(sections.count) sections")
                 }
 
                 // Sync parent goal progress with sequential steps

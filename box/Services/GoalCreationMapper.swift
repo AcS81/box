@@ -109,6 +109,7 @@ enum GoalCreationMapper {
             ) ?? Date().addingTimeInterval(TimeInterval((nextStepResponse.daysFromNow ?? 7) * 86400))
         )
         firstStep.stepStatus = .current
+        firstStep.content = nextStepResponse.aiSuggestion ?? ""  // Set AI's proactive guidance
         goal.updatedAt = Date()
 
         try modelContext.save()

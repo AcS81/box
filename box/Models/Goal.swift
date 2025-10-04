@@ -55,6 +55,12 @@ class Goal {
     var orderIndexInParent: Int = 0     // position in sequence (0, 1, 2...)
     var outcome: String = ""            // what gets achieved at this step
 
+    // User inputs (appendable, multiple entries)
+    var userInputsJSON: String = ""     // JSON storage for user's constraints/preferences/data
+
+    // Tree grouping metadata (emergent structure from AI analysis)
+    var treeGroupingJSON: String = ""   // JSON storage for tree sections
+
     enum StepStatus: String, Codable, CaseIterable {
         case pending     // Future step not yet accessible
         case current     // Active step user is working on
@@ -599,6 +605,54 @@ class Goal {
         // For now, return just revisions - views should use unifiedTimeline(from:) directly
         return revisionHistory.map { .revision($0) }
     }
+
+    // MARK: - User Inputs
+
+    /// Get/set user inputs (appendable constraints/preferences/data)
+    var userInputs: [String] {
+        get {
+            guard !userInputsJSON.isEmpty,
+                  let data = userInputsJSON.data(using: .utf8),
+                  let inputs = try? JSONDecoder().decode([String].self, from: data) else {
+                return []
+            }
+            return inputs
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue),
+               let json = String(data: data, encoding: .utf8) {
+                userInputsJSON = json
+            }
+        }
+    }
+
+    /// Append a new user input
+    func appendUserInput(_ input: String) {
+        guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        var current = userInputs
+        current.append(input)
+        userInputs = current
+    }
+
+    // MARK: - Tree Grouping
+
+    /// Get tree grouping sections (emergent structure from AI)
+    var treeGroupingSections: [TreeSection] {
+        get {
+            guard !treeGroupingJSON.isEmpty,
+                  let data = treeGroupingJSON.data(using: .utf8),
+                  let sections = try? JSONDecoder().decode([TreeSection].self, from: data) else {
+                return []
+            }
+            return sections
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue),
+               let json = String(data: data, encoding: .utf8) {
+                treeGroupingJSON = json
+            }
+        }
+    }
 }
 
 @Model
@@ -881,5 +935,19 @@ final class ScheduledEventLink {
         self.status = status
         self.startDate = startDate
         self.endDate = endDate
+    }
+}
+
+// MARK: - Tree Grouping Structure
+
+/// Represents a logical grouping/section of sequential steps (emergent from AI analysis)
+struct TreeSection: Codable, Identifiable, Equatable {
+    var id = UUID()
+    let title: String              // e.g. "Competitive Analysis", "Research Phase"
+    let stepIndices: [Int]         // e.g. [2, 3, 4] - steps that belong to this section
+    let isComplete: Bool           // true if all steps in section are completed
+
+    enum CodingKeys: String, CodingKey {
+        case title, stepIndices, isComplete
     }
 }
