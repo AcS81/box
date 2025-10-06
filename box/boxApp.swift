@@ -18,7 +18,6 @@ struct boxApp: App {
             AIMirrorSnapshot.self,
             GoalSnapshot.self,
             GoalRevision.self,
-            ScheduledEventLink.self,
             // Memory system models
             UserMemory.self,
             UserFact.self,

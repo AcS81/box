@@ -54,6 +54,9 @@ class Goal {
     var isSequentialStep: Bool = false  // true = this is a step in a sequence
     var orderIndexInParent: Int = 0     // position in sequence (0, 1, 2...)
     var outcome: String = ""            // what gets achieved at this step
+    var aiReasoning: String = ""        // WHY this step exists (AI's thought process)
+    var aiConfidence: Double = 0.8      // AI confidence 0-1 (shown to user for transparency)
+    var estimatedEffortHours: Int = 0   // Hours of effort for timeline visualization
 
     // User inputs (appendable, multiple entries)
     var userInputsJSON: String = ""     // JSON storage for user's constraints/preferences/data
@@ -89,14 +92,17 @@ class Goal {
     private var stepStatusStorage: String = StepStatus.unknown.rawValue
     var stepStatus: StepStatus {
         get { StepStatus(rawValue: stepStatusStorage) ?? .unknown }
-        set { stepStatusStorage = newValue.rawValue }
+        set {
+            // FIX: Force SwiftData/UI update by also updating updatedAt
+            stepStatusStorage = newValue.rawValue
+            updatedAt = Date()
+        }
     }
 
     @Relationship(deleteRule: .cascade) var subgoals: [Goal]?
     @Relationship(inverse: \Goal.subgoals) var parent: Goal?
     @Relationship(deleteRule: .cascade) var lockedSnapshot: GoalSnapshot?
     @Relationship(deleteRule: .cascade) var revisionHistory: [GoalRevision]
-    @Relationship(deleteRule: .cascade) var scheduledEvents: [ScheduledEventLink]
     @Relationship(deleteRule: .cascade, inverse: \GoalDependency.prerequisite) var outgoingDependencies: [GoalDependency]
     @Relationship(deleteRule: .cascade, inverse: \GoalDependency.dependent) var incomingDependencies: [GoalDependency]
     @Relationship(deleteRule: .cascade) var targetMetric: GoalTargetMetric?
@@ -124,7 +130,6 @@ class Goal {
         self.targetDate = targetDate
         self.kindStorage = kind.rawValue
         self.revisionHistory = []
-        self.scheduledEvents = []
         self.outgoingDependencies = []
         self.incomingDependencies = []
         self.phases = []
@@ -199,6 +204,7 @@ class Goal {
     }
 
     /// Complete current sequential step and activate next
+    /// FIX: Ensure proper status updates for UI refresh
     func advanceSequentialStep() {
         guard let current = currentSequentialStep else { return }
 
@@ -209,11 +215,13 @@ class Goal {
         // Lock current (becomes "until now")
         current.stepStatus = .completed
         current.lock(with: current.captureSnapshot())
+        current.updatedAt = Date() // FIX: Force UI update
 
         // Activate next if exists
         if let next = nextSequentialStep {
             next.stepStatus = .current
             next.progress = 0.0 // Reset next step progress
+            next.updatedAt = Date() // FIX: Force UI update
         }
 
         // Sync parent progress with sequential steps
@@ -222,12 +230,30 @@ class Goal {
     }
 
     /// Synchronize parent goal progress with sequential step completion
+    /// FIX: Force SwiftData update by also updating updatedAt timestamp
+    /// FIX: Only sync if progress hasn't been manually set recently
     func syncProgressWithSequentialSteps() {
         guard hasSequentialSteps else { return }
-        progress = sequentialProgress
+        let newProgress = sequentialProgress
+
+        // FIX: Protect manually-set progress - only sync if we're not already at 100%
+        // and the goal hasn't been manually updated in the last 5 seconds
+        let manuallySetRecently = Date().timeIntervalSince(updatedAt) < 5.0
+        if manuallySetRecently && progress > sequentialProgress {
+            // User manually set progress higher - don't overwrite
+            print("⏭ Skipping progress sync - manual progress (\(Int(progress * 100))%) is higher than sequential (\(Int(sequentialProgress * 100))%)")
+            return
+        }
+
+        // Only update if changed to avoid unnecessary saves
+        if abs(progress - newProgress) > 0.001 {
+            progress = newProgress
+            updatedAt = Date() // Force SwiftData to recognize change
+        }
     }
 
     /// Mark sequential step complete and advance
+    /// FIX: Ensure child and parent updates trigger UI refresh
     func completeSequentialStep(_ step: Goal) {
         guard sequentialSteps.contains(where: { $0.id == step.id }),
               step.stepStatus == .current else { return }
@@ -236,12 +262,14 @@ class Goal {
         step.completedAt = Date()  // Track actual completion time
         step.stepStatus = .completed
         step.lock(with: step.captureSnapshot())
+        step.updatedAt = Date() // FIX: Force UI update
 
         // Activate next if exists
         let nextIndex = step.orderIndexInParent + 1
         if let next = sequentialSteps.first(where: { $0.orderIndexInParent == nextIndex }) {
             next.stepStatus = .current
             next.progress = 0.0
+            next.updatedAt = Date() // FIX: Force UI update
         }
 
         syncProgressWithSequentialSteps()
@@ -391,16 +419,6 @@ class Goal {
             lockedSnapshot = snapshot
         }
         appendRevision(summary: summary, rationale: rationale)
-    }
-
-    func linkScheduledEvent(_ link: ScheduledEventLink) {
-        guard !scheduledEvents.contains(where: { $0.eventIdentifier == link.eventIdentifier }) else { return }
-        link.goalID = id
-        scheduledEvents.append(link)
-    }
-
-    func unlinkScheduledEvent(withIdentifier identifier: String) {
-        scheduledEvents.removeAll { $0.eventIdentifier == identifier }
     }
 
     private func appendRevision(summary: String, rationale: String?, beforeSnapshot: GoalSnapshot? = nil) {
@@ -933,30 +951,6 @@ final class GoalRevision {
         }
 
         return changes.isEmpty ? summary : changes.joined(separator: "\n")
-    }
-}
-
-@Model
-final class ScheduledEventLink {
-    enum Status: String, Codable {
-        case proposed
-        case confirmed
-        case cancelled
-    }
-
-    var id = UUID()
-    var eventIdentifier: String
-    var status: Status = ScheduledEventLink.Status.proposed
-    var startDate: Date?
-    var endDate: Date?
-    var lastSyncedAt: Date = Date()
-    var goalID: UUID?
-
-    init(eventIdentifier: String, status: Status = ScheduledEventLink.Status.proposed, startDate: Date? = nil, endDate: Date? = nil) {
-        self.eventIdentifier = eventIdentifier
-        self.status = status
-        self.startDate = startDate
-        self.endDate = endDate
     }
 }
 

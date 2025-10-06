@@ -21,8 +21,6 @@ class AutopilotService: ObservableObject {
     private let userContextService: UserContextService
     private let lifecycleService: GoalLifecycleService
     private let learningEngine: AutopilotLearningEngine
-    private var checkTimer: Timer?
-    private let checkInterval: TimeInterval = 3600 // 1 hour
 
     private init() {
         self.aiService = AIService.shared
@@ -31,50 +29,23 @@ class AutopilotService: ObservableObject {
         // Note: lifecycleService will be injected when starting
         self.lifecycleService = GoalLifecycleService(
             aiService: AIService.shared,
-            calendarService: CalendarService(),
             userContextService: UserContextService.shared
         )
     }
 
-    // MARK: - Monitoring
+    // MARK: - Manual Processing (User-Action Triggered Only)
 
     func startMonitoring() {
-        guard !isRunning else { return }
-
-        isRunning = true
-        print("🤖 Autopilot monitoring started (checking every \(Int(checkInterval / 60)) minutes)")
-
-        // Check immediately on start
-        Task {
-            await performAutopilotCheck()
-        }
-
-        // Schedule periodic checks
-        checkTimer = Timer.scheduledTimer(withTimeInterval: checkInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                await self?.performAutopilotCheck()
-            }
-        }
+        // NO-OP: Timer-based monitoring removed
+        print("🤖 Autopilot ready (user-action triggered only)")
     }
 
     func stopMonitoring() {
-        checkTimer?.invalidate()
-        checkTimer = nil
-        isRunning = false
-        print("🤖 Autopilot monitoring stopped")
+        // NO-OP: Timer-based monitoring removed
+        print("🤖 Autopilot stopped")
     }
 
-    // MARK: - Core Logic
-
-    func performAutopilotCheck() async {
-        print("🤖 Autopilot check started...")
-        lastCheckDate = Date()
-
-        // This needs to be called with actual goals and modelContext from the app
-        // Will be triggered via notification or direct call from ContentView
-    }
-
-    func processAutopilotGoals(_ goals: [Goal], modelContext: ModelContext) async {
+    func processAutopilotGoals(_ goals: [Goal], modelContext: ModelContext, skipExpensive: Bool = false) async {
         let autopilotGoals = goals.filter { $0.isAutopilotEnabled && !$0.isLocked }
 
         guard !autopilotGoals.isEmpty else {
@@ -82,26 +53,29 @@ class AutopilotService: ObservableObject {
             return
         }
 
-        print("🤖 Processing \(autopilotGoals.count) autopilot goal(s)...")
+        print("🤖 Processing \(autopilotGoals.count) autopilot goal(s)\(skipExpensive ? " (quick mode)" : "")...")
 
         for goal in autopilotGoals {
-            await processGoal(goal, allGoals: goals, modelContext: modelContext)
+            await processGoal(goal, allGoals: goals, modelContext: modelContext, skipExpensive: skipExpensive)
         }
 
         print("🤖 Autopilot check complete")
     }
 
-    private func processGoal(_ goal: Goal, allGoals: [Goal], modelContext: ModelContext) async {
+    private func processGoal(_ goal: Goal, allGoals: [Goal], modelContext: ModelContext, skipExpensive: Bool = false) async {
         // Check each condition and take action
 
-        // 1. Auto-breakdown if needed
-        if shouldBreakdown(goal) {
-            await autoBreakdown(goal, allGoals: allGoals, modelContext: modelContext)
-        }
+        // OPTIMIZATION: Skip expensive AI operations during preload (breakdown & activate)
+        if !skipExpensive {
+            // 1. Auto-breakdown if needed
+            if shouldBreakdown(goal) {
+                await autoBreakdown(goal, allGoals: allGoals, modelContext: modelContext)
+            }
 
-        // 2. Auto-activate if ready
-        if shouldActivate(goal) {
-            await autoActivate(goal, allGoals: allGoals, modelContext: modelContext)
+            // 2. Auto-activate if ready
+            if shouldActivate(goal) {
+                await autoActivate(goal, allGoals: allGoals, modelContext: modelContext)
+            }
         }
 
         // 3. Auto-update progress based on subgoals
@@ -114,10 +88,7 @@ class AutopilotService: ObservableObject {
             await autoComplete(goal, allGoals: allGoals, modelContext: modelContext)
         }
 
-        // 5. Nudge if stagnant
-        if shouldNudge(goal) {
-            await autoNudge(goal)
-        }
+        // 5. Nudge REMOVED (no time-based notifications)
     }
 
     // MARK: - Condition Checks
@@ -177,16 +148,6 @@ class AutopilotService: ObservableObject {
         return allComplete && notYetComplete
     }
 
-    private func shouldNudge(_ goal: Goal) -> Bool {
-        // Nudge if: Stagnant for 7+ days + active + incomplete
-        let stagnantThreshold: TimeInterval = 7 * 24 * 60 * 60 // 7 days
-        let isStagnant = Date().timeIntervalSince(goal.updatedAt) >= stagnantThreshold
-        let isActive = goal.activationState == .active
-        let isIncomplete = goal.progress < 1.0
-
-        return isStagnant && isActive && isIncomplete
-    }
-
     // MARK: - Actions
 
     private func autoBreakdown(_ goal: Goal, allGoals: [Goal], modelContext: ModelContext) async {
@@ -223,22 +184,15 @@ class AutopilotService: ObservableObject {
 
     private func autoActivate(_ goal: Goal, allGoals: [Goal], modelContext: ModelContext) async {
         do {
-            let plan = try await lifecycleService.generateActivationPlan(for: goal, within: allGoals)
-
-            try await lifecycleService.confirmActivation(
-                goal: goal,
-                plan: plan,
-                within: allGoals,
-                modelContext: modelContext
-            )
+            try await lifecycleService.activate(goal: goal, within: allGoals, modelContext: modelContext)
 
             // Record in chat
             recordSystemMessage(
                 goal: goal,
-                content: "🤖 Autopilot: Activated with \(plan.events.count) focus session\(plan.events.count == 1 ? "" : "s")"
+                content: "🤖 Autopilot: Goal activated"
             )
 
-            print("🤖 Auto-activate: Scheduled '\(goal.title)' with \(plan.events.count) sessions")
+            print("🤖 Auto-activate: Activated '\(goal.title)'")
 
         } catch {
             print("❌ Auto-activate failed for '\(goal.title)': \(error)")
@@ -279,18 +233,6 @@ class AutopilotService: ObservableObject {
         )
 
         print("🤖 Auto-complete: '\(goal.title)' completed automatically")
-    }
-
-    private func autoNudge(_ goal: Goal) async {
-        // Add a nudge message to chat
-        let daysSinceUpdate = Int(Date().timeIntervalSince(goal.updatedAt) / 86400)
-
-        recordSystemMessage(
-            goal: goal,
-            content: "🤖 Autopilot: This goal hasn't moved in \(daysSinceUpdate) days. Need help breaking through?"
-        )
-
-        print("🤖 Auto-nudge: Sent reminder for '\(goal.title)'")
     }
 
     // MARK: - Helper

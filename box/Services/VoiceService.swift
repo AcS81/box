@@ -31,9 +31,6 @@ final class VoiceService: ObservableObject {
     private var converter: AVAudioConverter?
     private var totalFramesWritten: AVAudioFramePosition = 0
     private var outputSampleRate: Double = 16000
-    private let minimumRecordingDuration: Double = 0.2  // Minimum 200ms for reliable recordings
-    private var recordingStartTime: Date?
-    private var debugFrameCount: Int = 0  // Debug counter
     private var outputURL: URL? {
         didSet { cleanupOldFile(oldValue) }
     }
@@ -66,10 +63,8 @@ final class VoiceService: ObservableObject {
 
             await MainActor.run {
                 state = .recording(level: 0)
-                recordingStartTime = Date()
                 totalFramesWritten = 0
-                debugFrameCount = 0
-                print("🎤 Recording started at \(recordingStartTime?.description ?? "nil")")
+                print("🎤 Recording started")
                 print("🎤 Audio engine running: \(audioEngine.isRunning)")
             }
         } catch {
@@ -79,10 +74,7 @@ final class VoiceService: ObservableObject {
 
     func stopRecordingGeneral() async {
         guard isRecording else {
-            // Force cleanup if stuck
-            await MainActor.run {
-                cancel()
-            }
+            await MainActor.run { cancel() }
             return
         }
 
@@ -98,47 +90,6 @@ final class VoiceService: ObservableObject {
             await MainActor.run {
                 state = .error("No audio captured")
                 outputURL = nil
-                recordingStartTime = nil
-            }
-            return
-        }
-
-        // Validate by duration - prioritize elapsed time as it's more reliable
-        let elapsedDuration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
-        let framesDuration = Double(totalFramesWritten) / max(outputSampleRate, 1)
-        let seconds = max(elapsedDuration, framesDuration)
-
-        print("🎤 Recording stats: elapsed=\(String(format: "%.3f", elapsedDuration))s, frames=\(totalFramesWritten), frameDuration=\(String(format: "%.3f", framesDuration))s, buffers=\(debugFrameCount)")
-
-        if seconds < minimumRecordingDuration {
-            await MainActor.run {
-                try? FileManager.default.removeItem(at: url)
-                state = .error("Recording too short (\(String(format: "%.2f", seconds))s). Please hold the button for at least \(String(format: "%.1f", minimumRecordingDuration))s.")
-                outputURL = nil
-                recordingStartTime = nil
-            }
-            return
-        }
-
-        // Validate file exists and has content
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            await MainActor.run {
-                state = .error("Audio file not created")
-                outputURL = nil
-                recordingStartTime = nil
-            }
-            return
-        }
-
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-        print("🎤 Audio file size: \(fileSize) bytes")
-
-        if fileSize < 100 {  // Very small file, likely empty
-            await MainActor.run {
-                try? FileManager.default.removeItem(at: url)
-                state = .error("No audio captured. Check microphone permissions.")
-                outputURL = nil
-                recordingStartTime = nil
             }
             return
         }
@@ -152,31 +103,21 @@ final class VoiceService: ObservableObject {
                 transcript = text
                 state = .idle
                 outputURL = nil
-                recordingStartTime = nil
             }
         } catch {
             try? FileManager.default.removeItem(at: url)
             await MainActor.run {
                 state = .error(error.localizedDescription)
                 outputURL = nil
-                recordingStartTime = nil
             }
         }
     }
 
     func stopRecording(for goal: Goal) async {
         guard isRecording else {
-            // Force cleanup if stuck
-            await MainActor.run {
-                cancel()
-            }
+            await MainActor.run { cancel() }
             return
         }
-
-        // Capture start time BEFORE any async operations to prevent race conditions
-        let capturedStartTime = recordingStartTime
-        let capturedFrameCount = totalFramesWritten
-        let capturedDebugCount = debugFrameCount
 
         // Stop engine and cleanup
         audioEngine.stop()
@@ -190,48 +131,6 @@ final class VoiceService: ObservableObject {
             await MainActor.run {
                 state = .error("No audio captured")
                 outputURL = nil
-                recordingStartTime = nil
-            }
-            return
-        }
-
-        // Validate by duration - use captured values to prevent race conditions
-        let elapsedDuration = capturedStartTime.map { Date().timeIntervalSince($0) } ?? 0
-        let framesDuration = Double(capturedFrameCount) / max(outputSampleRate, 1)
-        let seconds = max(elapsedDuration, framesDuration)
-
-        print("🎤 Recording stats: elapsed=\(String(format: "%.3f", elapsedDuration))s, frames=\(capturedFrameCount), frameDuration=\(String(format: "%.3f", framesDuration))s, buffers=\(capturedDebugCount)")
-        print("🎤 Start time was: \(capturedStartTime?.description ?? "nil"), using captured values to avoid race conditions")
-
-        if seconds < minimumRecordingDuration {
-            await MainActor.run {
-                try? FileManager.default.removeItem(at: url)
-                state = .error("Recording too short (\(String(format: "%.2f", seconds))s). Please hold the button for at least \(String(format: "%.1f", minimumRecordingDuration))s.")
-                outputURL = nil
-                recordingStartTime = nil
-            }
-            return
-        }
-
-        // Validate file exists and has content
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            await MainActor.run {
-                state = .error("Audio file not created")
-                outputURL = nil
-                recordingStartTime = nil
-            }
-            return
-        }
-
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-        print("🎤 Audio file size: \(fileSize) bytes")
-
-        if fileSize < 100 {  // Very small file, likely empty
-            await MainActor.run {
-                try? FileManager.default.removeItem(at: url)
-                state = .error("No audio captured. Check microphone permissions.")
-                outputURL = nil
-                recordingStartTime = nil
             }
             return
         }
@@ -245,13 +144,11 @@ final class VoiceService: ObservableObject {
                 transcript = text
                 state = .idle
                 outputURL = nil
-                recordingStartTime = nil
             }
         } catch {
             try? FileManager.default.removeItem(at: url)
             await MainActor.run {
                 outputURL = nil
-                recordingStartTime = nil
                 self.transitionToError(error.localizedDescription)
             }
         }
@@ -270,8 +167,6 @@ final class VoiceService: ObservableObject {
         outputURL = nil
         transcript = ""
         totalFramesWritten = 0
-        debugFrameCount = 0
-        recordingStartTime = nil
         state = .idle
     }
 
@@ -322,11 +217,6 @@ final class VoiceService: ObservableObject {
     private func handle(_ buffer: AVAudioPCMBuffer) {
         let frameCount = Int(buffer.frameLength)
         var peak: Float = 0
-        debugFrameCount += 1
-        
-        if debugFrameCount % 50 == 0 {
-            print("🎤 Audio buffer received: frames=\(frameCount), count=\(debugFrameCount)")
-        }
 
         if let channelData = buffer.floatChannelData {
             let samples = channelData.pointee
@@ -374,9 +264,6 @@ final class VoiceService: ObservableObject {
                     } else if status == .haveData || (status == .inputRanDry && convertedBuffer.frameLength > 0) {
                         try file.write(from: convertedBuffer)
                         totalFramesWritten += AVAudioFramePosition(convertedBuffer.frameLength)
-                        if debugFrameCount % 100 == 0 {
-                            print("🎤 Frames written: \(totalFramesWritten)")
-                        }
                     } else {
                         print("⚠️ Audio conversion status: \(status), frames: \(convertedBuffer.frameLength)")
                     }
@@ -414,8 +301,6 @@ final class VoiceService: ObservableObject {
         converter = nil
         outputURL = nil
         totalFramesWritten = 0
-        debugFrameCount = 0
-        recordingStartTime = nil
         state = .error(message)
     }
 }

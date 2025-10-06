@@ -207,16 +207,62 @@ struct StopsTimelineView: View {
             current.progress = 1.0
             current.stepStatus = .completed
             current.lock(with: current.captureSnapshot())
+            current.updatedAt = Date()
 
             // Mark entire goal as complete
             goal.progress = 1.0
             goal.deactivate(to: .completed, rationale: "All sequential steps completed")
             goal.updatedAt = Date()
-            try? modelContext.save()
 
-            errorMessage = "🎉 Goal completed! All steps finished."
+            do {
+                try modelContext.save()
+                errorMessage = "🎉 Goal completed! All steps finished."
+            } catch {
+                errorMessage = "⚠️ Goal completed but failed to save: \(error.localizedDescription)"
+                print("❌ Failed to save completed goal: \(error)")
+            }
             return
         }
+
+        // Check if next step already exists (pre-generated)
+        let nextStep = goal.nextSequentialStep
+        let hasPreGeneratedSteps = nextStep != nil
+        let pendingStepsCount = goal.sequentialSteps.filter { $0.stepStatus == .pending }.count
+
+        // Decide whether to regenerate:
+        // - If no next step exists (at the end)
+        // - If on the last pending step (so we can look ahead)
+        let shouldRegenerateSteps = !hasPreGeneratedSteps || pendingStepsCount == 0
+
+        if hasPreGeneratedSteps && !shouldRegenerateSteps {
+            // FAST PATH: Just advance to pre-generated step (NO API CALL!)
+            current.progress = 1.0
+            current.completedAt = Date()
+            current.stepStatus = .completed
+            current.lock(with: current.captureSnapshot())
+            current.updatedAt = Date()
+
+            // Activate next step
+            nextStep!.stepStatus = .current
+            nextStep!.progress = 0.0
+            nextStep!.updatedAt = Date()
+
+            goal.syncProgressWithSequentialSteps()
+            goal.updatedAt = Date()
+
+            do {
+                try modelContext.save()
+                errorMessage = nil
+                print("✅ Advanced to next pre-generated step (no API call)")
+            } catch {
+                errorMessage = "Failed to save: \(error.localizedDescription)"
+                print("❌ Failed to save: \(error)")
+            }
+            return
+        }
+
+        // REGENERATION PATH: Ran out of steps - ask AI what's next based on progress so far
+        print("🔄 Regenerating steps - reviewing progress to determine what comes next...")
 
         // Hard limit check
         if goal.sequentialSteps.count >= STEP_HARD_LIMIT {
@@ -239,37 +285,48 @@ struct StopsTimelineView: View {
             do {
                 let context = await userContextService.buildContext(from: goals)
 
-                // Generate NEXT sequential step via AI BEFORE advancing
+                // Ask AI: "Based on what's been accomplished, what's next?"
+                // AI will review all completed steps + user inputs and decide:
+                // - Generate next step if more work needed
+                // - Mark as final step if goal is achieved
                 let nextStepResponse = try await AIService.shared.generateNextSequentialStep(
                     for: goal,
                     completedStep: current,
                     context: context
                 )
 
-                // Check for duplicate titles before creating new step
+                // Check for duplicate titles
                 let existingTitles = goal.sequentialSteps.map { $0.title.lowercased().trimmingCharacters(in: .whitespaces) }
                 let newTitleLower = nextStepResponse.title.lowercased().trimmingCharacters(in: .whitespaces)
 
                 if existingTitles.contains(newTitleLower) {
-                    errorMessage = "⚠️ Duplicate step detected: '\(nextStepResponse.title)'. Skipping creation."
-                    print("❌ Duplicate step title detected: \(nextStepResponse.title)")
-                    // Still mark current as complete but don't create duplicate
+                    print("❌ Duplicate step detected - AI thinks we're done")
+                    // Mark current as complete and finish
                     current.progress = 1.0
                     current.stepStatus = .completed
                     current.lock(with: current.captureSnapshot())
-                    goal.syncProgressWithSequentialSteps()
+                    current.updatedAt = Date()
+
+                    // Complete the goal
+                    goal.progress = 1.0
+                    goal.deactivate(to: .completed, rationale: "All necessary steps completed")
                     goal.updatedAt = Date()
                     try modelContext.save()
+
+                    await MainActor.run {
+                        errorMessage = "🎉 Goal completed! AI determined no more steps needed."
+                    }
                     return
                 }
 
-                // Mark current step as complete and locked
+                // Mark current step as complete
                 current.progress = 1.0
-                current.completedAt = Date()  // Track actual completion time
+                current.completedAt = Date()
                 current.stepStatus = .completed
                 current.lock(with: current.captureSnapshot())
+                current.updatedAt = Date()
 
-                // Create and activate new step
+                // Create new step based on AI analysis of progress
                 let newStep = goal.createSequentialStep(
                     title: nextStepResponse.title,
                     outcome: nextStepResponse.outcome,
@@ -280,33 +337,41 @@ struct StopsTimelineView: View {
                     )
                 )
 
-                // Set AI's proactive guidance as content
                 newStep.content = nextStepResponse.aiSuggestion ?? ""
+                newStep.updatedAt = Date()
 
-                // Check if AI says goal is complete
+                // Check if AI says goal is complete after this step
                 if nextStepResponse.isGoalComplete == true {
-                    print("🎯 AI indicates goal is complete (confidence: \(nextStepResponse.confidenceLevel ?? 0))")
-                    newStep.stepStatus = .current  // Final step - user needs to complete it
-                    // Mark this as the final step (prepend to existing AI suggestion)
+                    print("🎯 AI indicates this is the final step (confidence: \(nextStepResponse.confidenceLevel ?? 0))")
+                    newStep.stepStatus = .current
                     newStep.content = "⭐️ Final Step - Complete this to finish the goal!\n\n" + (nextStepResponse.aiSuggestion ?? nextStepResponse.outcome)
-                    errorMessage = "✅ Final step: \(nextStepResponse.title). Complete this to finish the goal!"
+                    await MainActor.run {
+                        errorMessage = "✅ Final step generated: \(nextStepResponse.title)"
+                    }
                 } else {
-                    newStep.stepStatus = .current  // Make this the active step
+                    newStep.stepStatus = .current
+                    await MainActor.run {
+                        errorMessage = nil
+                    }
                 }
 
-                // Apply tree grouping if provided by AI - create real parent Goals
+                // Apply tree grouping if provided
                 if let treeGrouping = nextStepResponse.treeGrouping {
                     applyTreeStructure(treeGrouping: treeGrouping, to: goal)
                 }
 
-                // Sync parent goal progress with sequential steps
                 goal.syncProgressWithSequentialSteps()
                 goal.updatedAt = Date()
+
                 try modelContext.save()
 
+                print("✅ Regenerated next step based on progress so far")
+
             } catch {
-                errorMessage = "Failed to generate next step: \(error.localizedDescription)"
-                print("❌ Sequential step completion error: \(error)")
+                await MainActor.run {
+                    errorMessage = "Failed to generate next step: \(error.localizedDescription)"
+                }
+                print("❌ Sequential step regeneration error: \(error)")
             }
         }
     }
@@ -317,7 +382,7 @@ struct StopsTimelineView: View {
         print("📁 Applying tree structure with \(treeGrouping.sections.count) sections")
 
         // Work with current sequential steps
-        var steps = goal.sequentialSteps
+        let steps = goal.sequentialSteps
         var processedIndices = Set<Int>()
         var parentsToInsert: [(index: Int, parent: Goal)] = []
 

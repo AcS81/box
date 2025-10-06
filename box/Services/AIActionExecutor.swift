@@ -233,10 +233,9 @@ class AIActionExecutor {
 
     private func activateGoal(_ goal: Goal, goals: [Goal], modelContext: ModelContext) async throws -> ActionResult {
         try await lifecycleService.activate(goal: goal, within: goals, modelContext: modelContext)
-        let eventCount = goal.scheduledEvents.count
         return ActionResult(
             success: true,
-            message: "Activated '\(goal.title)' with \(eventCount) calendar event\(eventCount == 1 ? "" : "s")"
+            message: "Activated '\(goal.title)'"
         )
     }
 
@@ -311,15 +310,15 @@ class AIActionExecutor {
         // Insert into context
         modelContext.insert(goal)
 
-        // Generate first sequential step for timeline-based completion
+        // Generate initial roadmap (3-7 steps) upfront for timeline-based completion
         do {
-            try await GoalCreationMapper.generateFirstStep(
+            try await GoalCreationMapper.generateInitialRoadmap(
                 for: goal,
                 context: context,
                 modelContext: modelContext
             )
         } catch {
-            print("⚠️ Failed to generate first step: \(error.localizedDescription)")
+            print("⚠️ Failed to generate initial roadmap: \(error.localizedDescription)")
             // Continue anyway - user can still use the goal without steps
         }
 
@@ -373,6 +372,13 @@ class AIActionExecutor {
         }
 
         let clampedProgress = min(max(progress, 0), 1.0)
+        // FIX: Don't overwrite if goal has sequential steps - they manage their own progress
+        if goal.hasSequentialSteps {
+            return ActionResult(
+                success: false,
+                message: "Cannot manually set progress on goals with sequential steps. Complete steps instead."
+            )
+        }
         goal.progress = clampedProgress
         goal.updatedAt = .now
 
@@ -480,8 +486,14 @@ class AIActionExecutor {
             throw ActionError.subgoalNotFound
         }
 
-        subgoal.progress = 1.0
-        subgoal.updatedAt = .now
+        // FIX: If this is a sequential step, use proper completion method
+        if subgoal.isSequentialStep {
+            goal.completeSequentialStep(subgoal)
+            // Parent goal's syncProgressWithSequentialSteps() is called internally
+        } else {
+            subgoal.progress = 1.0
+            subgoal.updatedAt = .now
+        }
         goal.updatedAt = .now
 
         return ActionResult(success: true, message: "Completed subtask '\(subgoal.title)' ✓")
@@ -798,13 +810,7 @@ class AIActionExecutor {
             }
             goal.revisionHistory.removeAll()
 
-            for link in goal.scheduledEvents {
-                link.goalID = primaryGoal.id
-                if !primaryGoal.scheduledEvents.contains(where: { $0.eventIdentifier == link.eventIdentifier }) {
-                    primaryGoal.scheduledEvents.append(link)
-                }
-            }
-            goal.scheduledEvents.removeAll()
+            // Calendar events removed (no scheduledEvents)
 
             if let snapshot = goal.lockedSnapshot {
                 snapshot.goalID = primaryGoal.id

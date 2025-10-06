@@ -278,7 +278,8 @@ extension AIService {
             "outcome": "Working demo of main features ready for testing",
             "aiSuggestion": "Core features for MVP: (1) User signup/login, (2) Create/edit goals, (3) View progress dashboard, (4) Mark tasks complete, (5) Basic notifications. Build with React + Supabase (fastest). Day 1-2: Setup + auth page. Day 3-4: Goal CRUD. Day 5: Dashboard with charts. Day 6-7: Polish + test with 3 friends. Deploy on Vercel (free). Skip: Settings, themes, advanced filters - add later based on feedback. This gets you to testable product in 1 week.",
             "daysFromNow": 14,
-            "reasoning": "Why this step comes next and how it differs from all previous steps",
+            "reasoning": "Research is complete - now we apply those insights to build a testable prototype",
+            "estimatedEffortHours": 35,
             "isGoalComplete": false,
             "confidenceLevel": 0.85,
             "treeGrouping": {
@@ -404,13 +405,17 @@ extension AIService {
                     "order": 1,
                     "title": "Research and define requirements",
                     "outcome": "Clear understanding of what needs to be done",
-                    "daysFromStart": 7
+                    "daysFromStart": 7,
+                    "reasoning": "Starting with research ensures we build the right thing",
+                    "estimatedEffortHours": 12
                 },
                 {
                     "order": 2,
                     "title": "Create initial prototype",
                     "outcome": "Basic working version ready for feedback",
-                    "daysFromStart": 21
+                    "daysFromStart": 21,
+                    "reasoning": "Prototype validates assumptions before full build",
+                    "estimatedEffortHours": 35
                 }
                 // ... 3-7 steps total
             ],
@@ -709,13 +714,7 @@ extension AIService {
         }
     }
 
-    func generateCalendarEvents(for goal: Goal, context: AIContext, existingEvents: [String] = []) async throws -> CalendarEventsResponse {
-        let function = AIFunction.generateCalendarEvents(goal: goal, context: context)
-
-        // If we have existing events, we need to modify the prompt
-        // For now, just pass through - the prompt building in AIService should handle it
-        return try await processRequest(function, responseType: CalendarEventsResponse.self)
-    }
+    // REMOVED: generateCalendarEvents (calendar integration removed)
 
     func summarizeProgress(for goal: Goal, context: AIContext) async throws -> String {
         let function = AIFunction.summarizeProgress(goal: goal, context: context)

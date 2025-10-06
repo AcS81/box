@@ -178,32 +178,38 @@ private struct GanttBarRow: View {
     let onTap: () -> Void
 
     private var cumulativePercentage: Int {
-        Int((Double(stepNumber) / Double(totalSteps)) * 100)
+        // Cumulative progress: completed steps + current step's progress
+        // Formula: (steps_before_this + this_step_progress) / total_steps * 100
+        let stepsCompleted = Double(stepNumber - 1)  // Steps before this one
+        let currentProgress = step.progress           // This step's progress (0.0 to 1.0)
+        let total = Double(totalSteps)
+        let cumulative = ((stepsCompleted + currentProgress) / total) * 100
+        return min(100, Int(cumulative))
     }
 
     private var barPosition: (start: Double, width: Double) {
         let totalInterval = timelineEnd.timeIntervalSince(timelineStart)
 
-        // Start position
+        // Start position: use createdAt for first step, otherwise previous step's end
         let stepStart = step.createdAt
         let startOffset = stepStart.timeIntervalSince(timelineStart)
         let startPercent = max(0, min(1, startOffset / totalInterval))
 
-        // End date: use actual completion date if completed, otherwise use target date
+        // End date: always prefer targetDate for consistent visualization
         let stepEnd: Date
-        if step.stepStatus == .completed, let completedDate = step.completedAt {
-            // For completed steps, use actual completion date
-            stepEnd = completedDate
-        } else if let targetDate = step.targetDate {
-            // For pending/current steps, use projected target date
+        if let targetDate = step.targetDate {
+            // Use target date for all steps (consistent planned duration)
             stepEnd = targetDate
+        } else if step.stepStatus == .completed, let completedDate = step.completedAt {
+            // Fallback to actual completion if no target date
+            stepEnd = completedDate
         } else {
-            // Fallback: minimal width if no date available
-            return (startPercent, 0.05)
+            // Fallback: estimate ~7 days duration
+            stepEnd = Calendar.current.date(byAdding: .day, value: 7, to: stepStart) ?? stepStart
         }
 
         let duration = stepEnd.timeIntervalSince(stepStart)
-        let widthPercent = max(0.02, min(1 - startPercent, duration / totalInterval))
+        let widthPercent = max(0.05, min(1 - startPercent, duration / totalInterval))
 
         return (startPercent, widthPercent)
     }

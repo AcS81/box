@@ -141,10 +141,13 @@ private struct StepSegment: View {
     let isLast: Bool
 
     private var cumulativePercentage: Int {
-        // Use target total (10) as baseline for consistent percentages
-        // This prevents percentages from changing as new steps are added
-        let baseline = min(targetTotal, 10)
-        return min(100, Int((Double(stepNumber) / Double(baseline)) * 100))
+        // Cumulative progress: completed steps + current step's progress
+        // Formula: (steps_before_this + this_step_progress) / total_steps * 100
+        let stepsCompleted = Double(stepNumber - 1)  // Steps before this one
+        let currentProgress = step.progress           // This step's progress (0.0 to 1.0)
+        let total = Double(totalSteps)
+        let cumulative = ((stepsCompleted + currentProgress) / total) * 100
+        return min(100, Int(cumulative))
     }
 
     private var fillColor: Color {

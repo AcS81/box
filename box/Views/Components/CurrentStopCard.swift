@@ -462,6 +462,11 @@ struct CurrentStopCard: View {
 
         // Clear input field (keep field visible for more inputs)
         contextualInput = ""
+
+        // NOTE: User inputs affect future step generation
+        // The next time we run low on steps (pendingCount <= 1),
+        // handleStopCompletion will automatically regenerate using this new context
+        print("✏️ User added input: \(contextualInput) - will affect next step generation")
     }
 }
 

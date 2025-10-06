@@ -84,35 +84,43 @@ enum GoalCreationMapper {
         goal.updatedAt = referenceDate
     }
 
-    /// Generate the first sequential step for a newly created goal
-    static func generateFirstStep(
+    /// Generate initial roadmap (3-7 steps) for a newly created goal
+    static func generateInitialRoadmap(
         for goal: Goal,
         context: AIContext,
         modelContext: ModelContext
     ) async throws {
         guard !goal.hasSequentialSteps else { return }
 
-        let nextStepResponse = try await AIService.shared.generateNextSequentialStep(
+        // Call AI ONCE to get 3-7 steps upfront
+        let roadmapResponse = try await AIService.shared.generateInitialRoadmap(
             for: goal,
-            completedStep: goal, // Use goal itself as placeholder for first step
             context: context
         )
 
-        // Create the first sequential step
-        let firstStep = goal.createSequentialStep(
-            title: nextStepResponse.title,
-            outcome: nextStepResponse.outcome,
-            targetDate: Calendar.current.date(
-                byAdding: .day,
-                value: nextStepResponse.daysFromNow ?? 7,
-                to: goal.createdAt
-            ) ?? Date().addingTimeInterval(TimeInterval((nextStepResponse.daysFromNow ?? 7) * 86400))
-        )
-        firstStep.stepStatus = .current
-        firstStep.content = nextStepResponse.aiSuggestion ?? ""  // Set AI's proactive guidance
-        goal.updatedAt = Date()
+        // Create all steps at once
+        for (index, stepData) in roadmapResponse.steps.enumerated() {
+            let step = goal.createSequentialStep(
+                title: stepData.title,
+                outcome: stepData.outcome,
+                targetDate: Calendar.current.date(
+                    byAdding: .day,
+                    value: stepData.daysFromStart,
+                    to: goal.createdAt
+                ) ?? Date().addingTimeInterval(TimeInterval(stepData.daysFromStart * 86400))
+            )
 
+            // First step is current, rest are pending
+            step.stepStatus = index == 0 ? .current : .pending
+            step.aiReasoning = stepData.reasoning ?? ""
+            step.estimatedEffortHours = stepData.estimatedEffortHours ?? 0
+            step.updatedAt = Date()
+        }
+
+        goal.updatedAt = Date()
         try modelContext.save()
+
+        print("✅ Generated \(roadmapResponse.steps.count) steps upfront - no more API calls until user adds input or steps run out")
     }
 
     private static func clampConfidence(_ value: Double?) -> Double {

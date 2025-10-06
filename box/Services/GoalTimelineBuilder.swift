@@ -137,36 +137,7 @@ enum GoalTimelineBuilder {
             )
         }
 
-        // Scheduled events (single or multi-hour blocks)
-        for link in goal.scheduledEvents {
-            guard let start = link.startDate ?? link.endDate else { continue }
-            let end = link.endDate ?? start.addingTimeInterval(3600)
-            let interval = DateInterval(start: start, end: end)
-            guard horizon.intersects(interval) else { continue }
-
-            let confidence: Double = {
-                switch link.status {
-                case .confirmed: return 0.95
-                case .proposed: return 0.6
-                case .cancelled: return 0.2
-                }
-            }()
-
-            results.append(
-                GoalTimelineEntry(
-                    id: link.id,
-                    goalID: goal.id,
-                    goalTitle: goal.title,
-                    kind: .event,
-                    title: eventHeadline(for: link),
-                    detail: link.status == .cancelled ? "Session cancelled" : link.status == .confirmed ? "Confirmed focus block" : "Awaiting confirmation",
-                    startDate: start,
-                    endDate: end,
-                    metricSummary: nil,
-                    confidence: confidence
-                )
-            )
-        }
+        // Scheduled events REMOVED (calendar integration removed)
 
         // Campaign metric checkpoint when no projections exist
         if goal.kind != .event, goal.projections.isEmpty, let metric = goal.targetMetric {
@@ -220,15 +191,6 @@ enum GoalTimelineBuilder {
         return "Δ\(value)\(unitText)\(labelText)".trimmingCharacters(in: .whitespaces)
     }
 
-    private static func eventHeadline(for link: ScheduledEventLink) -> String {
-        switch link.status {
-        case .confirmed:
-            return "Confirmed session"
-        case .proposed:
-            return "Proposed slot"
-        case .cancelled:
-            return "Cancelled session"
-        }
-    }
+    // REMOVED: eventHeadline (calendar integration removed)
 }
 

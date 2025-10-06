@@ -34,7 +34,7 @@ class UserContextService: ObservableObject {
 
     @Published private(set) var contextStatus: ContextStatus = .idle
 
-    // Context cache to avoid expensive rebuilds
+    // Context cache to avoid expensive rebuilds - EVENT-DRIVEN (not time-based)
     private var cachedContext: AIContext?
     private var cacheKey: String = ""
     private var inflightTask: (key: String, task: Task<[ChatGoalSnapshot], Never>)?
@@ -47,15 +47,16 @@ class UserContextService: ObservableObject {
         // Generate cache key from goal IDs and timestamps
         let key = generateCacheKey(for: goals)
 
-        // Return cached context if valid
+        // EVENT-DRIVEN: Return cached context if key matches (no time expiration)
         if key == cacheKey, let cached = cachedContext {
-            print("✓ Using cached context (performance boost)")
+            print("✓ Using cached context (event-driven)")
             contextStatus = .ready(Date())
             return cached
         }
 
-        print("🔄 Building fresh context from \(goals.count) goals...")
+        print("🔄 Building fresh context from \(goals.count) goals... (triggered by goal change)")
 
+        // Check if there's already an inflight task for this key
         if let inflight = inflightTask, inflight.key == key {
             let snapshots = await inflight.task.value
             var context = makeBaseContext(from: goals)
@@ -70,7 +71,7 @@ class UserContextService: ObservableObject {
         contextStatus = .preparing
 
         let baseContext = makeBaseContext(from: goals)
-        let relevantGoals = selectRelevantGoals(from: goals, limit: 20)
+        let relevantGoals = selectRelevantGoals(from: goals, limit: 15)
         let relevantGoalIDs = relevantGoals.map { $0.id }
         let seedIDs = collectSeedIDs(for: relevantGoals)
 
@@ -98,21 +99,22 @@ class UserContextService: ObservableObject {
         var context = baseContext
         context.goalSnapshots = snapshots
 
-        // Cache the result
+        // Cache the result (EVENT-DRIVEN: no expiration, only invalidated by changes)
         cachedContext = context
         cacheKey = key
         contextStatus = .ready(Date())
-        print("✓ Context cached with key: \(key.prefix(12))...")
+        print("✓ Context cached with key: \(key.prefix(12))... (valid until goal changes)")
 
         return context
     }
 
     /// Invalidate the cache (call when goals are modified)
-    func invalidateCache() {
+    /// EVENT-DRIVEN: Invalidates immediately on goal changes
+    func invalidateCache(reason: String = "goal modified") {
         cachedContext = nil
         cacheKey = ""
         contextStatus = .idle
-        print("🗑 Context cache invalidated")
+        print("🗑 Context cache invalidated (\(reason))")
     }
 
     func prewarmContext(for goals: [Goal]) {
@@ -277,8 +279,9 @@ class UserContextService: ObservableObject {
         return signature
     }
 
-    /// Select most relevant goals for context (prioritize active, recent, high-priority)
-    private func selectRelevantGoals(from goals: [Goal], limit: Int) -> [Goal] {
+    /// OPTIMIZATION: Select most relevant goals for context (prioritize active, recent, high-priority)
+    /// Reduced from 20 to 15 to speed up context building
+    private func selectRelevantGoals(from goals: [Goal], limit: Int = 15) -> [Goal] {
         guard goals.count > limit else { return goals }
 
         // Prioritize: active > high priority > recently updated
@@ -371,7 +374,6 @@ class UserContextService: ObservableObject {
                 priority: goal.priority.rawValue,
                 category: goal.category,
                 availableActions: goal.availableChatActions,
-                eventCount: goal.scheduledEvents.count,
                 revisionCount: goal.revisionHistory.count,
                 parentID: goal.parent?.id,
                 subgoalIDs: subgoalIDs,
@@ -472,7 +474,6 @@ private extension UserContextService {
         let priority: String
         let category: String
         let availableActions: [String]
-        let eventCount: Int
         let revisionCount: Int
         let parentID: UUID?
         let subgoalIDs: [UUID]
@@ -510,7 +511,7 @@ private enum ContextSnapshotBuilder {
                 category: seed.category,
                 subgoals: subgoalTree,
                 availableActions: seed.availableActions,
-                eventCount: seed.eventCount,
+                eventCount: 0,
                 revisionCount: seed.revisionCount,
                 hasParent: seed.parentID != nil,
                 parent: parentRelation,

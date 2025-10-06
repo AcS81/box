@@ -553,7 +553,6 @@ struct GeneralChatView: View {
         goals: [],
         lifecycleService: GoalLifecycleService(
             aiService: AIService.shared,
-            calendarService: CalendarService(),
             userContextService: UserContextService.shared
         )
     )

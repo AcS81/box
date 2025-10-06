@@ -62,7 +62,6 @@ struct AIContext {
     let completedGoalsCount: Int
     let averageCompletionTime: TimeInterval?
     var goalSnapshots: [ChatGoalSnapshot]
-    var existingCalendarEvents: [String]
 
     // Memory system additions
     var userFacts: [String] = []  // Persistent facts about user
@@ -78,7 +77,7 @@ struct AIContext {
         self.completedGoalsCount = goals.filter { $0.progress >= 1.0 }.count
         self.averageCompletionTime = AIContext.calculateAverageCompletionTime(goals: goals)
         self.goalSnapshots = [] // Will be populated by UserContextService
-        self.existingCalendarEvents = existingEvents
+        // Calendar removed - existingEvents parameter kept for compatibility but ignored
     }
 
     private static func calculateAverageCompletionTime(goals: [Goal]) -> TimeInterval? {
@@ -99,7 +98,7 @@ class AIService: ObservableObject {
     let baseURL = "https://api.openai.com/v1/chat/completions"
     let requestTimeout: TimeInterval = 30.0
     private var requestCache: [String: CachedResponse] = [:]
-    private let cacheTimeout: TimeInterval = 300
+    private let cacheTimeout: TimeInterval = 1800 // Increased from 300s (5min) to 1800s (30min)
     private let secretsService: SecretsService
     private var cancellables: Set<AnyCancellable> = []
 
@@ -113,7 +112,6 @@ class AIService: ObservableObject {
         case breakdownGoal(goal: Goal, context: AIContext)
         case chatWithGoal(message: String, goal: Goal, context: AIContext)
         case generalChat(message: String, history: [GeneralChatMessage], context: AIContext)
-        case generateCalendarEvents(goal: Goal, context: AIContext)
         case summarizeProgress(goal: Goal, context: AIContext)
         case reorderCards(goals: [Goal], instruction: String, context: AIContext)
         case generateMirrorCard(goal: Goal, context: AIContext)
@@ -190,6 +188,18 @@ class AIService: ObservableObject {
         }
     }
 
+    /// OPTIMIZATION: Determine if we should use GPT-4 (expensive) or GPT-3.5-turbo (fast & cheap)
+    private func shouldUseGPT4(for function: AIFunction) -> Bool {
+        switch function {
+        case .breakdownGoal, .generateTimelineInsights:
+            // Only complex reasoning needs GPT-4
+            return true
+        default:
+            // Everything else works fine with GPT-3.5-turbo (10x cheaper, 3x faster)
+            return false
+        }
+    }
+
     private func performSingleAPIRequestWithActions(for function: AIFunction, apiKey: String) async throws -> String {
         let prompt = buildContextualPrompt(for: function)
         // Use action-aware system prompt for chat functions
@@ -202,8 +212,9 @@ class AIService: ObservableObject {
         request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
+        // OPTIMIZATION: Use GPT-3.5-turbo for action-aware operations (faster, cheaper)
         let body: [String: Any] = [
-            "model": "gpt-4",
+            "model": "gpt-3.5-turbo",
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": prompt]
@@ -269,8 +280,11 @@ class AIService: ObservableObject {
         request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
+        // OPTIMIZATION: Use GPT-3.5-turbo for most operations (10x cheaper, 3x faster)
+        let model = shouldUseGPT4(for: function) ? "gpt-4" : "gpt-3.5-turbo"
+
         let body: [String: Any] = [
-            "model": "gpt-4",
+            "model": model,
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": prompt]
@@ -400,8 +414,6 @@ class AIService: ObservableObject {
                 partialResult ^= entry.timestamp.hashValue
             }
             return "general_chat_\(message.hashValue)_\(signature)"
-        case .generateCalendarEvents(let goal, _):
-            return "calendar_\(goal.id.uuidString)"
         case .summarizeProgress(let goal, _):
             return "summary_\(goal.id.uuidString)_\(Int(goal.progress * 100))"
         case .reorderCards(let goals, let instruction, _):
@@ -439,14 +451,14 @@ class AIService: ObservableObject {
 
     private func getRequestParameters(for function: AIFunction) -> (systemPrompt: String, temperature: Double, maxTokens: Int) {
         switch function {
-        case .createGoal, .breakdownGoal, .generateCalendarEvents, .reorderCards, .generateMirrorCard, .suggestEmoji:
-            return (structuredSystemPrompt, 0.3, 1000)
+        case .createGoal, .breakdownGoal, .reorderCards, .generateMirrorCard, .suggestEmoji:
+            return (structuredSystemPrompt, 0.3, 800) // Reduced from 1000
         case .generateTimelineInsights:
-            return (structuredSystemPrompt, 0.35, 1400)
+            return (structuredSystemPrompt, 0.35, 1200) // Reduced from 1400
         case .generalChat:
-            return (actionAwareSystemPrompt, 0.4, 1500)
+            return (actionAwareSystemPrompt, 0.4, 1200) // Reduced from 1500
         case .chatWithGoal, .summarizeProgress:
-            return (conversationalSystemPrompt, 0.7, 800)
+            return (conversationalSystemPrompt, 0.7, 600) // Reduced from 800
         }
     }
 
@@ -502,9 +514,9 @@ class AIService: ObservableObject {
             }
 
             Rules:
-            - Choose "event" when the goal is a single happening with a calendar anchor.
-            - Choose "campaign" when the user seeks a transformation tracked by measurable change.
-            - Use "hybrid" sparingly when both a fixed event and an ongoing metric are mandatory parts.
+            - Choose "event" when the goal is a single happening with a specific target date.
+            - Choose "campaign" when the user seeks a transformation tracked by measurable change over time.
+            - Use "hybrid" sparingly when both a fixed deadline and ongoing metrics are mandatory.
             - Omit targetMetric if no honest measurement exists; never fabricate impossible numbers.
             - Roadmap slices should map the next ~14 days, each with a tangible, verifiable outcome.
             - Always ensure confidence values are between 0 and 1 and match the realism of the milestone.
@@ -605,48 +617,6 @@ class AIService: ObservableObject {
 
             Act as the conductor for the user's entire goal board. Reference ongoing commitments, highlight dependencies, and propose coordinated actions when it helps. Mark requiresConfirmation as true for destructive or bulk operations such as delete_goal, bulk_delete, bulk_archive, merge_goals, or anything irreversible. If no action is needed, return an empty actions array but still provide a helpful reply rooted in the conversation history.
             """
-        case .generateCalendarEvents(let goal, _):
-            let workingHours = context.preferredWorkingHours.map { "Preferred working hours: \($0.start):00 - \($0.end):00" } ?? "No preferred working hours specified"
-
-            var calendarSection = ""
-            if !context.existingCalendarEvents.isEmpty {
-                calendarSection = """
-
-                USER'S EXISTING CALENDAR (Next 2 weeks):
-                \(context.existingCalendarEvents.prefix(20).joined(separator: "\n"))
-
-                IMPORTANT: Schedule focus sessions AROUND these existing events, not during them.
-                Suggest times that avoid conflicts and respect the user's schedule.
-                """
-            }
-
-            return """
-            \(contextSection)
-            \(workingHours)
-            \(calendarSection)
-
-            Generate calendar events for this goal:
-            Title: "\(goal.title)"
-            Description: \(goal.content)
-            Priority: \(goal.priority.rawValue)
-            Progress: \(Int(goal.progress * 100))%
-
-            Return as JSON:
-            {
-                "events": [
-                    {
-                        "title": "Focused work session title",
-                        "duration": 90,
-                        "suggestedTimeSlot": "morning|afternoon|evening",
-                        "recurring": false,
-                        "description": "What will be accomplished in this session",
-                        "preparation": ["things to prepare beforehand"]
-                    }
-                ],
-                "schedulingTips": ["tip1", "tip2"]
-            }
-            """
-
         case .summarizeProgress(let goal, _):
             return """
             \(contextSection)
@@ -823,7 +793,6 @@ class AIService: ObservableObject {
              .breakdownGoal(_, let context),
              .chatWithGoal(_, _, let context),
              .generalChat(_, _, let context),
-             .generateCalendarEvents(_, let context),
              .summarizeProgress(_, let context),
              .reorderCards(_, _, let context),
              .generateMirrorCard(_, let context),
@@ -893,7 +862,6 @@ class AIService: ObservableObject {
         - Locked: \(snapshot.isLocked ? "Yes (cannot modify)" : "No")
         - Progress: \(Int(snapshot.progress * 100))%
         - Category: \(snapshot.category)
-        - Calendar Events: \(snapshot.eventCount)
         """
 
         if let parent = snapshot.parent {
@@ -1036,7 +1004,7 @@ class AIService: ObservableObject {
 
         Core capabilities:
         1. Create and decompose goals into actionable steps
-        2. Generate intelligent calendar events without overwhelming the user
+        2. Manage goal activation and lifecycle states
         3. Analyze patterns and suggest improvements
         4. Provide structured data for the app interface
 
@@ -1047,9 +1015,9 @@ class AIService: ObservableObject {
         - Ensure all JSON is properly formatted and parseable
         - Consider the user's context and patterns when making suggestions
         - Keep suggestions practical and achievable
-        - Respect user's working hours and preferences
+        - Focus on clear goal structure and actionable sequential steps
 
-        Remember: This is a calendar-mindset app without calendar UI. Focus on time-aware, context-sensitive recommendations.
+        Remember: Help users break down goals into manageable steps they can complete one at a time.
         """
     }
 
@@ -1106,8 +1074,8 @@ class AIService: ObservableObject {
 
         2. SINGLE-GOAL OPERATIONS (works in both general AND goal chat):
            LIFECYCLE:
-           - activate_goal: Schedule goal to calendar (no params)
-           - deactivate_goal: Remove from calendar (no params)
+           - activate_goal: Activate goal (changes state to active, no params)
+           - deactivate_goal: Deactivate goal (changes state to draft, no params)
            - delete_goal: Permanently delete (no params, requires confirmation)
            - complete_goal: Mark as 100% done (no params)
            - lock_goal: Prevent modifications (no params)
@@ -1299,7 +1267,7 @@ class AIService: ObservableObject {
         User: "create a work goal for Q1 report and activate it"
         Response (chain multiple actions):
         {
-            "reply": "Created 'Q1 Report' and scheduling it to your calendar now.",
+            "reply": "Created 'Q1 Report' and activating it now.",
             "actions": [
                 {"type": "create_goal", "parameters": {"title": "Q1 Report", "category": "Work", "priority": "next"}},
                 {"type": "activate_goal", "goalId": "newly-created-id"}
@@ -1310,7 +1278,7 @@ class AIService: ObservableObject {
         User: "show me my overdue goals"
         Response (query and suggest action):
         {
-            "reply": "You have 2 overdue goals:\\n• Marketing Campaign (due 3 days ago, 40% complete)\\n• Team Meeting Prep (due yesterday, 0% complete)\\n\\nWould you like me to reschedule these or mark them as urgent?",
+            "reply": "You have 2 goals that need attention:\\n• Marketing Campaign (40% complete, stalled)\\n• Team Meeting Prep (0% complete, high priority)\\n\\nWould you like me to help prioritize or break them down?",
             "actions": [],
             "requiresConfirmation": false
         }
@@ -1364,7 +1332,7 @@ struct GoalCreationResponse: Codable {
     let targetMetric: TargetMetric?
     let phases: [Phase]?
     let roadmapSlices: [RoadmapSlice]?
-    let suggestedSubgoals: [String]
+    let suggestedSubgoals: [String]?  // FIX: Made optional - AI doesn't always return this
     let estimatedDuration: String?
     let difficulty: String?
 
@@ -1410,20 +1378,6 @@ struct GoalBreakdownResponse: Codable {
         let difficulty: String?
         let children: [Node]?
         let isAtomic: Bool?
-    }
-}
-
-struct CalendarEventsResponse: Codable {
-    let events: [CalendarEvent]
-    let schedulingTips: [String]?
-
-    struct CalendarEvent: Codable {
-        let title: String
-        let duration: Int
-        let suggestedTimeSlot: String
-        let recurring: Bool
-        let description: String?
-        let preparation: [String]?
     }
 }
 
@@ -1490,9 +1444,10 @@ struct NextSequentialStepResponse: Codable {
     let outcome: String
     let aiSuggestion: String?  // AI's proactive guidance on HOW to accomplish this step
     let daysFromNow: Int?
-    let reasoning: String?
+    let reasoning: String?  // WHY this step is necessary
     let isGoalComplete: Bool?  // AI decides if goal is finished after this step
     let confidenceLevel: Double?  // AI's confidence in completion assessment (0-1)
+    let estimatedEffortHours: Int?  // Hours of work for timeline visualization
     let treeGrouping: TreeGrouping?  // Emergent structure/sections from AI analysis
 }
 
@@ -1517,4 +1472,6 @@ struct RoadmapStep: Codable {
     let title: String
     let outcome: String
     let daysFromStart: Int
+    let reasoning: String?  // WHY this step exists
+    let estimatedEffortHours: Int?  // Hours of effort for timeline visualization
 }

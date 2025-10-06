@@ -13,15 +13,12 @@ import SwiftData
 final class GoalLifecycleService: ObservableObject {
     enum LifecycleError: LocalizedError {
         case goalLocked
-        case calendarAccessDenied
         case activationFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .goalLocked:
                 return "Goal is locked and cannot be modified."
-            case .calendarAccessDenied:
-                return "Calendar access is required to activate this goal."
             case .activationFailed(let reason):
                 return reason
             }
@@ -32,24 +29,14 @@ final class GoalLifecycleService: ObservableObject {
     @Published private(set) var lastError: String?
 
     private let aiService: AIService
-    private let calendarService: CalendarService
     private let userContextService: UserContextService
-    private let minimumUpcomingSessions = 3
-    private let scheduleMaintenanceInterval: TimeInterval = 3600 // 1 hour
-    private var scheduleMaintenanceTask: Task<Void, Never>?
 
     init(
         aiService: AIService,
-        calendarService: CalendarService,
         userContextService: UserContextService
     ) {
         self.aiService = aiService
-        self.calendarService = calendarService
         self.userContextService = userContextService
-    }
-
-    deinit {
-        scheduleMaintenanceTask?.cancel()
     }
 
     func isProcessing(goalID: Goal.ID) -> Bool {
@@ -115,7 +102,7 @@ final class GoalLifecycleService: ObservableObject {
         goal.updatedAt = .now
     }
 
-    func generateActivationPlan(for goal: Goal, within goals: [Goal]) async throws -> CalendarService.ActivationPlan {
+    func activate(goal: Goal, within goals: [Goal], modelContext: ModelContext) async throws {
         lastError = nil
         setProcessing(goal.id, isProcessing: true)
         defer { setProcessing(goal.id, isProcessing: false) }
@@ -124,38 +111,10 @@ final class GoalLifecycleService: ObservableObject {
             throw LifecycleError.goalLocked
         }
 
-        let plan = try await buildActivationPlan(for: goal, within: goals)
-        guard !plan.events.isEmpty else {
-            throw LifecycleError.activationFailed("No suitable schedule was generated for this goal.")
-        }
+        goal.activate(at: .now, rationale: "Goal activated")
+        goal.updatedAt = .now
 
-        return plan
-    }
-
-    func confirmActivation(
-        goal: Goal,
-        plan: CalendarService.ActivationPlan,
-        within goals: [Goal],
-        modelContext: ModelContext
-    ) async throws {
-        lastError = nil
-        setProcessing(goal.id, isProcessing: true)
-        defer { setProcessing(goal.id, isProcessing: false) }
-
-        try await finalizeActivation(goal: goal, plan: plan, within: goals, modelContext: modelContext)
-    }
-
-    func activate(goal: Goal, within goals: [Goal], modelContext: ModelContext) async throws {
-        lastError = nil
-        setProcessing(goal.id, isProcessing: true)
-        defer { setProcessing(goal.id, isProcessing: false) }
-
-        let plan = try await buildActivationPlan(for: goal, within: goals)
-        guard !plan.events.isEmpty else {
-            throw LifecycleError.activationFailed("No suitable schedule was generated for this goal.")
-        }
-
-        try await finalizeActivation(goal: goal, plan: plan, within: goals, modelContext: modelContext)
+        await refreshMirrorCard(for: goal, within: goals, modelContext: modelContext, tips: [])
     }
 
     func deactivate(goal: Goal, reason: String? = nil, modelContext: ModelContext) async {
@@ -163,12 +122,6 @@ final class GoalLifecycleService: ObservableObject {
         setProcessing(goal.id, isProcessing: true)
         defer { setProcessing(goal.id, isProcessing: false) }
 
-        for link in goal.scheduledEvents {
-            try? await calendarService.deleteEvent(with: link.eventIdentifier)
-            modelContext.delete(link)
-        }
-
-        goal.scheduledEvents.removeAll()
         goal.deactivate(to: .draft, rationale: reason)
         goal.updatedAt = .now
 
@@ -183,205 +136,6 @@ final class GoalLifecycleService: ObservableObject {
         }
     }
 
-    private func buildActivationPlan(for goal: Goal, within goals: [Goal]) async throws -> CalendarService.ActivationPlan {
-        guard await calendarService.requestAccess() else {
-            throw LifecycleError.calendarAccessDenied
-        }
-
-        return try await calendarService.generateSmartSchedule(for: goal, goals: goals)
-    }
-
-    private func finalizeActivation(
-        goal: Goal,
-        plan: CalendarService.ActivationPlan,
-        within goals: [Goal],
-        modelContext: ModelContext
-    ) async throws {
-        guard calendarService.isAuthorized else {
-            throw LifecycleError.calendarAccessDenied
-        }
-
-        guard !plan.events.isEmpty else {
-            throw LifecycleError.activationFailed("No sessions selected for activation.")
-        }
-
-        var links: [ScheduledEventLink] = []
-
-        for event in plan.events {
-            let composedNotes: String
-            if let detail = event.notes, !detail.isEmpty {
-                composedNotes = "\(detail)\n\nScheduled via YOU AND GOALS"
-            } else {
-                composedNotes = "YOU AND GOALS — \(goal.title)"
-            }
-
-            let identifier = try await calendarService.createEvent(
-                title: event.title,
-                startDate: event.startDate,
-                duration: event.duration,
-                notes: composedNotes
-            )
-
-            let link = ScheduledEventLink(
-                eventIdentifier: identifier,
-                status: .confirmed,
-                startDate: event.startDate,
-                endDate: event.startDate.addingTimeInterval(event.duration)
-            )
-            link.goalID = goal.id
-            modelContext.insert(link)
-            links.append(link)
-        }
-
-        goal.activate(at: .now, rationale: "Scheduled \(links.count) focus sessions")
-        links.forEach { goal.linkScheduledEvent($0) }
-        goal.updatedAt = .now
-
-        await refreshMirrorCard(for: goal, within: goals, modelContext: modelContext, tips: plan.tips)
-    }
-
-    // MARK: - Schedule Maintenance
-
-    func startScheduleMaintenance(goalsProvider: @escaping () -> [Goal], modelContext: ModelContext) {
-        stopScheduleMaintenance()
-
-        scheduleMaintenanceTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            while !Task.isCancelled {
-                let snapshot = goalsProvider()
-                await self.syncActiveSchedules(goals: snapshot, modelContext: modelContext)
-
-                do {
-                    try await Task.sleep(nanoseconds: UInt64(self.scheduleMaintenanceInterval * 1_000_000_000))
-                } catch {
-                    break
-                }
-            }
-        }
-    }
-
-    func stopScheduleMaintenance() {
-        scheduleMaintenanceTask?.cancel()
-        scheduleMaintenanceTask = nil
-    }
-
-    func syncActiveSchedules(goals: [Goal], modelContext: ModelContext) async {
-        guard await calendarService.requestAccess() else {
-            lastError = LifecycleError.calendarAccessDenied.errorDescription
-            return
-        }
-
-        let now = Date()
-        let activeGoals = goals.filter { $0.activationState == .active && $0.progress < 1.0 }
-
-        for goal in activeGoals {
-            var upcomingLinks: [ScheduledEventLink] = []
-            var expiredLinks: [ScheduledEventLink] = []
-
-            for link in goal.scheduledEvents {
-                if linkHasConcluded(link, relativeTo: now) {
-                    expiredLinks.append(link)
-                } else {
-                    upcomingLinks.append(link)
-                }
-            }
-
-            if !expiredLinks.isEmpty {
-                for link in expiredLinks {
-                    try? await calendarService.deleteEvent(with: link.eventIdentifier)
-                    goal.unlinkScheduledEvent(withIdentifier: link.eventIdentifier)
-                    modelContext.delete(link)
-                }
-                goal.updatedAt = .now
-            }
-
-            let needed = max(0, minimumUpcomingSessions - upcomingLinks.count)
-            if needed > 0 {
-                await scheduleAdditionalSessions(
-                    for: goal,
-                    neededCount: needed,
-                    within: goals,
-                    modelContext: modelContext,
-                    referenceDate: now
-                )
-            }
-        }
-    }
-
-    private func linkHasConcluded(_ link: ScheduledEventLink, relativeTo now: Date) -> Bool {
-        if let endDate = link.endDate {
-            return endDate <= now
-        }
-
-        if let startDate = link.startDate {
-            return startDate <= now
-        }
-
-        return true
-    }
-
-    private func scheduleAdditionalSessions(
-        for goal: Goal,
-        neededCount: Int,
-        within goals: [Goal],
-        modelContext: ModelContext,
-        referenceDate now: Date
-    ) async {
-        do {
-            let plan = try await calendarService.generateSmartSchedule(for: goal, goals: goals)
-            guard !plan.events.isEmpty else { return }
-
-            var existingStartKeys = Set(
-                goal.scheduledEvents.compactMap { link -> Int? in
-                    guard let date = link.startDate else { return nil }
-                    return Int(date.timeIntervalSinceReferenceDate / 60.0)
-                }
-            )
-
-            var created = 0
-
-            for event in plan.events.sorted(by: { $0.startDate < $1.startDate }) {
-                guard event.startDate > now else { continue }
-
-                let startKey = Int(event.startDate.timeIntervalSinceReferenceDate / 60.0)
-                if existingStartKeys.contains(startKey) {
-                    continue
-                }
-
-                let identifier = try await calendarService.createEvent(
-                    title: event.title,
-                    startDate: event.startDate,
-                    duration: event.duration,
-                    notes: event.notes
-                )
-
-                let link = ScheduledEventLink(
-                    eventIdentifier: identifier,
-                    status: .confirmed,
-                    startDate: event.startDate,
-                    endDate: event.startDate.addingTimeInterval(event.duration)
-                )
-                link.goalID = goal.id
-                modelContext.insert(link)
-                goal.linkScheduledEvent(link)
-
-                existingStartKeys.insert(startKey)
-                created += 1
-
-                if created >= neededCount {
-                    break
-                }
-            }
-
-            if created > 0 {
-                goal.updatedAt = .now
-            }
-        } catch {
-            lastError = error.localizedDescription
-            print("❌ Failed to top up schedule for '\(goal.title)': \(error.localizedDescription)")
-        }
-    }
 
     private func refreshMirrorCard(
         for goal: Goal,
@@ -487,12 +241,6 @@ final class GoalLifecycleService: ObservableObject {
         setProcessing(goal.id, isProcessing: true)
         defer { setProcessing(goal.id, isProcessing: false) }
 
-        // Remove any scheduled events
-        for link in goal.scheduledEvents {
-            try? await calendarService.deleteEvent(with: link.eventIdentifier)
-            modelContext.delete(link)
-        }
-
         // Remove mirror cards
         let descriptor = FetchDescriptor<AIMirrorCard>()
         let mirrorCards = (try? modelContext.fetch(descriptor)) ?? []
@@ -520,13 +268,6 @@ final class GoalLifecycleService: ObservableObject {
         goal.deactivate(to: .completed, rationale: "Goal marked as completed")
         goal.progress = 1.0
         goal.updatedAt = .now
-
-        // Remove scheduled events (goal is done)
-        for link in goal.scheduledEvents {
-            try? await calendarService.deleteEvent(with: link.eventIdentifier)
-            modelContext.delete(link)
-        }
-        goal.scheduledEvents.removeAll()
 
         // Update mirror card
         await refreshMirrorCard(for: goal, within: goals, modelContext: modelContext, tips: ["Congratulations on completing this goal!"])

@@ -16,8 +16,6 @@ struct GoalCardView: View {
     @State private var recordedTranscript: String?
     @State private var showErrorAlert = false
     @State private var errorMessage = ""
-    @State private var showActivationPreview = false
-    @State private var activationPlan: CalendarService.ActivationPlan?
     @State private var showDeleteConfirmation = false
     @State private var goalEmoji: String = "🎯"
     @State private var showAllSubtasksSheet = false
@@ -89,7 +87,22 @@ struct GoalCardView: View {
             }
     }
 
-    private var upcomingEvent: ScheduledEventLink? {
+    // REMOVED: upcomingEvent (calendar integration removed)
+    /*
+    private var upcomingEventRemoved: ScheduledEventLink? {
+        // Calendar functionality removed
+        return nil
+    }
+    */
+
+    private var upcomingEventPlaceholder: String? {
+        // Calendar removed - this computed property no longer used
+        return nil
+    }
+
+    private var upcomingEventOld: Bool {
+        // Old code that referenced scheduledEvents
+        /*
         goal.scheduledEvents
             .sorted { lhs, rhs in
                 let lhsStart = lhs.startDate ?? lhs.endDate ?? .distantFuture
@@ -100,6 +113,8 @@ struct GoalCardView: View {
                 guard let start = link.startDate ?? link.endDate else { return false }
                 return start >= Date()
             }
+        */
+        return false
     }
 
     private var cardTint: Color {
@@ -154,32 +169,7 @@ struct GoalCardView: View {
         } message: {
             Text("This action cannot be undone. All subgoals and related data will also be deleted.")
         }
-        .sheet(isPresented: $showActivationPreview, onDismiss: {
-            activationPlan = nil
-        }) {
-            if let plan = activationPlan {
-                ActivationPreviewSheet(
-                    goalTitle: goal.title,
-                    plan: plan,
-                    isProcessing: isProcessing,
-                    onConfirm: {
-                        Task { await confirmActivation(using: plan) }
-                    },
-                    onCancel: {
-                        dismissActivationPreview()
-                    }
-                )
-                .presentationDetents([.medium, .large])
-            } else {
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text("Preparing activation plan...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-            }
-        }
+        // REMOVED: ActivationPreviewSheet (calendar integration removed)
         .sheet(isPresented: $showingChat) {
             GoalChatView(goal: goal)
         }
@@ -440,9 +430,8 @@ struct GoalCardView: View {
     }
 
     private var displayProgress: Double {
-        if goal.hasSequentialSteps {
-            return goal.sequentialProgress
-        }
+        // FIX: Always show actual progress, not computed sequential progress
+        // This ensures UI shows what's in the model
         return goal.progress
     }
 
@@ -479,21 +468,8 @@ struct GoalCardView: View {
                 unit: projection.metricUnit,
                 confidence: projection.confidence
             )
-        } else if let nextEvent = upcomingEvent {
-            let start = nextEvent.startDate ?? Date()
-            let end = nextEvent.endDate ?? start.addingTimeInterval(3600)
-            let detail = nextEventDetail(nextEvent)
-            milestoneCard(
-                icon: "calendar.badge.clock",
-                title: nextEventStatusLine(nextEvent),
-                detail: detail,
-                interval: DateInterval(start: start, end: end),
-                accent: Color.blue,
-                metric: nil,
-                unit: nil,
-                confidence: nil
-            )
         } else if goal.kind == .campaign, let target = goal.targetMetric {
+            // REMOVED: upcomingEvent display (calendar integration removed)
             let start = Date()
             let end = start.addingTimeInterval(Double(target.measurementWindowDays ?? 14) * 86400)
             milestoneCard(
@@ -799,7 +775,9 @@ struct GoalCardView: View {
         )
     }
 
-    private func nextEventStatusLine(_ link: ScheduledEventLink) -> String {
+    // REMOVED: nextEventStatusLine (calendar integration removed)
+    /*
+    private func nextEventStatusLineRemoved(_ link: ScheduledEventLink) -> String {
         guard let start = link.startDate else {
             return "Scheduled session"
         }
@@ -809,17 +787,7 @@ struct GoalCardView: View {
         formatter.timeStyle = .short
         return "Next session • \(formatter.string(from: start))"
     }
-
-    private func nextEventDetail(_ link: ScheduledEventLink) -> String? {
-        switch link.status {
-        case .confirmed:
-            return "Confirmed focus block"
-        case .proposed:
-            return "Awaiting confirmation"
-        case .cancelled:
-            return "Session cancelled"
-        }
-    }
+    */
 
     private func quickActionButton(
         icon: String,
@@ -1318,14 +1286,10 @@ struct GoalCardView: View {
             return
         }
 
+        // CALENDAR REMOVED: Activate directly without preview
         do {
             let goalsSnapshot = currentGoals()
-            let plan = try await lifecycleService.generateActivationPlan(for: goal, within: goalsSnapshot)
-
-            await MainActor.run {
-                activationPlan = plan
-                showActivationPreview = true
-            }
+            try await lifecycleService.activate(goal: goal, within: goalsSnapshot, modelContext: modelContext)
         } catch {
             await MainActor.run {
                 presentError(error)
@@ -1333,10 +1297,12 @@ struct GoalCardView: View {
         }
     }
 
-    private func confirmActivation(using plan: CalendarService.ActivationPlan) async {
+    // REMOVED: confirmActivation (calendar integration removed)
+    /*
+    private func confirmActivationRemoved(using plan: CalendarService.ActivationPlan) async {
         do {
             let goalsSnapshot = currentGoals()
-            try await lifecycleService.confirmActivation(
+            try await lifecycleService.confirmActivationRemoved(
                 goal: goal,
                 plan: plan,
                 within: goalsSnapshot,
@@ -1360,6 +1326,7 @@ struct GoalCardView: View {
         showActivationPreview = false
         activationPlan = nil
     }
+    */
 
     private func regenerateGoal() async {
         do {
@@ -1465,9 +1432,11 @@ struct PriorityBadge: View {
     }
 }
 
-struct ActivationPreviewSheet: View {
+// REMOVED: ActivationPreviewSheet (calendar integration removed)
+/*
+struct ActivationPreviewSheetRemoved: View {
     let goalTitle: String
-    let plan: CalendarService.ActivationPlan
+    let planRemoved: String // CalendarService.ActivationPlan removed
     let isProcessing: Bool
     let onConfirm: () -> Void
     let onCancel: () -> Void
@@ -1610,6 +1579,7 @@ struct ActivationPreviewSheet: View {
         return "\(max(minutes, 1))m"
     }
 }
+*/
 
 private struct MetricChip: View {
     let icon: String

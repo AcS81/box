@@ -7,7 +7,9 @@
       "Bash(plutil:*)",
       "Bash(xargs cat:*)",
       "Bash(xcrun simctl list:*)",
-      "Read(//Users/mac/Desktop/boxes/**)"
+      "Read(//Users/mac/Desktop/boxes/**)",
+      "Bash(tee:*)",
+      "Read(//private/tmp/**)"
     ],
     "deny": [],
     "ask": []
